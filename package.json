@@ -1,0 +1,42 @@
+{
+  "name": "smartdev-fpo-integration",
+  "version": "1.0.0",
+  "description": "SmartDev Universal FPO Integration Module with MoySklad & Hardware Licensing",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest --runInBand --detectOpenHandles",
+    "test:unit": "jest test/unit --runInBand",
+    "test:integration": "jest test/integration --runInBand",
+    "lint:architecture": "node scripts/lint-architecture.js",
+    "start:gateway": "ts-node src/gateway/index.ts",
+    "start:agent": "ts-node src/agent/index.ts"
+  },
+  "keywords": [
+    "smartdev",
+    "fpo",
+    "moysklad",
+    "fiscal",
+    "kyrgyzstan",
+    "licensing"
+  ],
+  "author": "SmartDev",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "fastify": "^4.28.1",
+    "pdfkit": "^0.15.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.1",
+    "@types/pdfkit": "^0.13.8",
+    "@types/ws": "^8.5.13",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  }
+}
