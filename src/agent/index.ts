@@ -4,6 +4,14 @@ import { SecureLocalStorage } from './secureStorage';
 import { AgentService } from './agentService';
 import { AgentWsClient } from './transport/agentWsClient';
 import { AuditLogger } from '../core/audit/auditLogger';
+import {
+  LicenseHeartbeatRequest,
+  LicenseHeartbeatResponse,
+  LicenseRegisterRequest,
+  LicenseRegisterResponse,
+  LicenseVerifyRequest,
+  LicenseVerifyResponse
+} from '../licensing/models/licenseTypes';
 
 async function main() {
   const agentId = process.env.AGENT_ID || 'AGENT-LOCAL-001';
@@ -18,29 +26,29 @@ async function main() {
   const fpoClient = new HttpFiscalConnectorClient(fpoUrl);
 
   const licenseTransport = {
-    async register(req: any) {
+    async register(req: LicenseRegisterRequest): Promise<LicenseRegisterResponse> {
       const res = await fetch(`${licenseServerUrl}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req)
       });
-      return res.json();
+      return (await res.json()) as LicenseRegisterResponse;
     },
-    async verify(req: any) {
+    async verify(req: LicenseVerifyRequest): Promise<LicenseVerifyResponse> {
       const res = await fetch(`${licenseServerUrl}/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req)
       });
-      return res.json();
+      return (await res.json()) as LicenseVerifyResponse;
     },
-    async heartbeat(req: any) {
+    async heartbeat(req: LicenseHeartbeatRequest): Promise<LicenseHeartbeatResponse> {
       const res = await fetch(`${licenseServerUrl}/heartbeat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req)
       });
-      return res.json();
+      return (await res.json()) as LicenseHeartbeatResponse;
     }
   };
 

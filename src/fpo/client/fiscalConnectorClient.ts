@@ -38,6 +38,8 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
   private baseUrl: string;
   private token?: string;
   private timeoutMs: number;
+  private registrationNumber?: string;
+  private receiptWidthMm: 56 | 80 = 80;
 
   constructor(baseUrl = 'http://localhost:8080', timeoutMs = 15000) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -48,16 +50,24 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
     this.token = token;
   }
 
+  public configure(options: { registrationNumber?: string; receiptWidthMm?: 56 | 80 }): void {
+    this.registrationNumber = options.registrationNumber;
+    if (options.receiptWidthMm) this.receiptWidthMm = options.receiptWidthMm;
+  }
+
   private async request<T>(endpoint: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Accept': 'application/json'
+      'Accept': 'application/json',
+      'Response-Type': 'JSON',
+      'WIDTH-RECEIPT': String(this.receiptWidthMm)
     };
 
     if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+      headers['Authorization'] = this.token;
     }
+    if (this.registrationNumber) headers['Registration-Number'] = this.registrationNumber;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);

@@ -39,7 +39,7 @@ describe('Licensing Subsystem Unit Tests', () => {
 
   it('should detect HARDWARE_MISMATCH if agent runs with different HWID (UC-22)', async () => {
     // 1. Initial register with HWID-1
-    await server.register({
+    const registration = await server.register({
       activationCode: 'ACT-KR-FPO-8888',
       moduleCode: 'FPO_INTEGRATION',
       agentId: 'AGENT-TEST-03',
@@ -50,7 +50,7 @@ describe('Licensing Subsystem Unit Tests', () => {
     // 2. Verify with matching HWID -> Valid
     const validCheck = await server.verify({
       licenseKey: 'LIC-SMARTDEV-TEST-001',
-      deviceToken: 'dummy',
+      deviceToken: registration.deviceToken,
       hardwareId: 'HWID-ORIGINAL-PC',
       agentId: 'AGENT-TEST-03'
     });
@@ -59,7 +59,7 @@ describe('Licensing Subsystem Unit Tests', () => {
     // 3. Verify from copied PC with different HWID -> HARDWARE_MISMATCH
     const copiedCheck = await server.verify({
       licenseKey: 'LIC-SMARTDEV-TEST-001',
-      deviceToken: 'dummy',
+      deviceToken: registration.deviceToken,
       hardwareId: 'HWID-COPIED-PIRATE-PC',
       agentId: 'AGENT-TEST-03'
     });

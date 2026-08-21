@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import {
   LicenseRecord,
   LicenseRegisterRequest,
@@ -15,11 +17,48 @@ import {
 export class LicenseServer {
   private licenses: Map<string, LicenseRecord> = new Map(); // licenseKey -> LicenseRecord
   private activationCodeMap: Map<string, string> = new Map(); // activationCode -> licenseKey
-  private tokenSecret = 'smartdev_license_secret_key_2026';
+  private deviceTokens: Map<string, { licenseKey: string; agentId: string; hardwareId: string }> = new Map();
+  private tokenSecret: string;
+  private rebindSecret: string;
 
-  constructor() {
-    // Seed default sample license for development / tests
-    this.seedDefaultLicense();
+  constructor(options?: { tokenSecret?: string; rebindSecret?: string; storagePath?: string; storageKey?: string }) {
+    this.tokenSecret = options?.tokenSecret || process.env.SMARTDEV_LICENSE_TOKEN_SECRET || 'smartdev_license_secret_key_2026';
+    this.rebindSecret = options?.rebindSecret || process.env.SMARTDEV_REBIND_SECRET || 'SMARTDEV_SUPER_ADMIN_AUTH';
+    this.storagePath = options?.storagePath || process.env.SMARTDEV_LICENSE_STORAGE_PATH;
+    this.storageKey = options?.storageKey || process.env.SMARTDEV_LICENSE_STORAGE_KEY;
+    if (this.storagePath && this.storageKey) this.load();
+    if (this.licenses.size === 0 && process.env.NODE_ENV !== 'production') {
+      this.seedDefaultLicense();
+    }
+  }
+
+  private storagePath?: string;
+  private storageKey?: string;
+
+  private load(): void {
+    if (!this.storagePath || !this.storageKey || !fs.existsSync(this.storagePath)) return;
+    const envelope = JSON.parse(fs.readFileSync(this.storagePath, 'utf8')) as { iv: string; authTag: string; data: string };
+    const key = crypto.createHash('sha256').update(this.storageKey).digest();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(envelope.authTag, 'base64'));
+    const records = JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]).toString('utf8')) as LicenseRecord[];
+    for (const license of records) {
+      this.licenses.set(license.licenseKey, license);
+      this.activationCodeMap.set(license.activationCode, license.licenseKey);
+      for (const seat of license.seats) {
+        if (seat.deviceToken) this.deviceTokens.set(seat.deviceToken, { licenseKey: license.licenseKey, agentId: seat.agentId, hardwareId: seat.hardwareId });
+      }
+    }
+  }
+
+  private persist(): void {
+    if (!this.storagePath || !this.storageKey) return;
+    fs.mkdirSync(path.dirname(this.storagePath), { recursive: true });
+    const key = crypto.createHash('sha256').update(this.storageKey).digest();
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify([...this.licenses.values()]), 'utf8'), cipher.final()]);
+    fs.writeFileSync(this.storagePath, JSON.stringify({ iv: iv.toString('base64'), authTag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') }), { mode: 0o600 });
   }
 
   private seedDefaultLicense(): void {
@@ -50,6 +89,7 @@ export class LicenseServer {
   public addLicense(license: LicenseRecord): void {
     this.licenses.set(license.licenseKey, { ...license });
     this.activationCodeMap.set(license.activationCode, license.licenseKey);
+    this.persist();
   }
 
   public getLicense(licenseKey: string): LicenseRecord | undefined {
@@ -64,6 +104,7 @@ export class LicenseServer {
       ...updates,
       updatedAt: new Date().toISOString()
     });
+    this.persist();
   }
 
   public generateDeviceToken(licenseKey: string, agentId: string, hardwareId: string): string {
@@ -158,6 +199,13 @@ export class LicenseServer {
 
     lic.updatedAt = new Date().toISOString();
     const deviceToken = this.generateDeviceToken(lic.licenseKey, req.agentId, req.hardwareId);
+    seat.deviceToken = deviceToken;
+    this.deviceTokens.set(deviceToken, {
+      licenseKey: lic.licenseKey,
+      agentId: req.agentId,
+      hardwareId: req.hardwareId
+    });
+    this.persist();
 
     return {
       success: true,
@@ -199,6 +247,11 @@ export class LicenseServer {
       return { valid: false, errorCode: 'HARDWARE_MISMATCH', reason: 'Hardware fingerprint mismatch detected' };
     }
 
+    const tokenBinding = this.deviceTokens.get(req.deviceToken);
+    if (!tokenBinding || tokenBinding.licenseKey !== req.licenseKey || tokenBinding.agentId !== req.agentId) {
+      return { valid: false, errorCode: 'INVALID_DEVICE_TOKEN', reason: 'Device token is invalid or revoked' };
+    }
+
     // Provider check (UC-23)
     if (req.providerCode && !lic.entitlements.allowedProviders.map(p => p.toUpperCase()).includes(req.providerCode.toUpperCase())) {
       return { valid: false, errorCode: 'PROVIDER_NOT_ALLOWED', reason: `Provider ${req.providerCode} not allowed` };
@@ -234,7 +287,13 @@ export class LicenseServer {
       return { status: 'HARDWARE_MISMATCH', message: 'Hardware fingerprint mismatch' };
     }
 
+    const tokenBinding = this.deviceTokens.get(req.deviceToken);
+    if (!tokenBinding || tokenBinding.licenseKey !== req.licenseKey || tokenBinding.agentId !== req.agentId) {
+      return { status: 'INVALID_TOKEN', message: 'Device token is invalid or revoked' };
+    }
+
     seat.lastHeartbeatAt = new Date().toISOString();
+    this.persist();
     return {
       status: 'OK',
       entitlements: lic.entitlements
@@ -245,7 +304,7 @@ export class LicenseServer {
    * Rebind hardware (UC-22)
    */
   public async rebind(req: LicenseRebindRequest): Promise<LicenseRebindResponse> {
-    if (req.authSecret !== 'SMARTDEV_SUPER_ADMIN_AUTH') {
+    if (req.authSecret !== this.rebindSecret) {
       throw new Error('Unauthorized rebind attempt. Admin auth secret required.');
     }
 
@@ -264,10 +323,42 @@ export class LicenseServer {
     lic.updatedAt = new Date().toISOString();
 
     const newDeviceToken = this.generateDeviceToken(lic.licenseKey, req.agentId, req.newHardwareId);
+    for (const [token, binding] of this.deviceTokens) {
+      if (binding.licenseKey === lic.licenseKey && binding.agentId === req.agentId) {
+        this.deviceTokens.delete(token);
+      }
+    }
+    seat.deviceToken = newDeviceToken;
+    this.deviceTokens.set(newDeviceToken, {
+      licenseKey: lic.licenseKey,
+      agentId: req.agentId,
+      hardwareId: req.newHardwareId
+    });
+    this.persist();
     return {
       success: true,
       newDeviceToken,
       message: 'Agent hardware rebind successful'
+    };
+  }
+
+  public getLicenseByDeviceToken(deviceToken: string): {
+    licenseKey: string;
+    agentId: string;
+    entitlements: Entitlements;
+    providerBindings: LicenseRecord['providerBindings'];
+    fpoBindings: LicenseRecord['fpoBindings'];
+  } | null {
+    const binding = this.deviceTokens.get(deviceToken);
+    if (!binding) return null;
+    const license = this.licenses.get(binding.licenseKey);
+    if (!license) return null;
+    return {
+      licenseKey: license.licenseKey,
+      agentId: binding.agentId,
+      entitlements: license.entitlements,
+      providerBindings: license.providerBindings,
+      fpoBindings: license.fpoBindings
     };
   }
 }

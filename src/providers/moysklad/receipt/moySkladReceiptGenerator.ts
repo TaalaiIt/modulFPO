@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import AdmZip from 'adm-zip';
+import QRCode from 'qrcode';
 import { NormalizedFiscalOperation, FiscalResult, ReceiptData } from '../../../core/operations/types';
 
 export interface ReceiptGenerationOptions {
@@ -40,51 +41,55 @@ export class MoySkladReceiptGenerator {
     };
   }
 
-  private renderPdf(
+  private async renderPdf(
     operation: NormalizedFiscalOperation,
     fiscalResult: Partial<FiscalResult>,
     options?: ReceiptGenerationOptions,
     paperWidthMm = 80
   ): Promise<Buffer> {
+    const qrCodeBuffer = fiscalResult.qrCodeUrl
+      ? await QRCode.toBuffer(fiscalResult.qrCodeUrl, { errorCorrectionLevel: 'M', margin: 1, width: 160 })
+      : undefined;
+
     return new Promise((resolve, reject) => {
-      // 1 mm ~= 2.83465 points in PDF
-      const widthPoints = paperWidthMm * 2.83465;
-      const heightPoints = paperWidthMm >= 200 ? 842 : 400; // A4 height or thermal roll default
+        // 1 mm ~= 2.83465 points in PDF
+        const widthPoints = paperWidthMm * 2.83465;
+        const heightPoints = paperWidthMm >= 200 ? 842 : 400; // A4 height or thermal roll default
 
-      const doc = new PDFDocument({
-        size: [widthPoints, heightPoints],
-        margins: { top: 10, bottom: 10, left: 10, right: 10 }
-      });
+        const doc = new PDFDocument({
+          size: [widthPoints, heightPoints],
+          margins: { top: 10, bottom: 10, left: 10, right: 10 }
+        });
 
-      const chunks: Buffer[] = [];
-      doc.on('data', (chunk) => chunks.push(chunk));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', reject);
+        const chunks: Buffer[] = [];
+        doc.on('data', (chunk) => chunks.push(chunk));
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
 
-      const titleFontSize = paperWidthMm === 56 ? 8 : 10;
-      const bodyFontSize = paperWidthMm === 56 ? 6 : 8;
+        const titleFontSize = paperWidthMm === 56 ? 8 : 10;
+        const bodyFontSize = paperWidthMm === 56 ? 6 : 8;
 
-      // Header
-      doc.fontSize(titleFontSize).text(options?.companyName || 'ОсОО «Смартдев»', { align: 'center' });
-      if (options?.companyInn) {
+        // Header
+        doc.fontSize(titleFontSize).text(options?.companyName || 'ОсОО «Смартдев»', { align: 'center' });
+        if (options?.companyInn) {
         doc.fontSize(bodyFontSize).text(`ИНН: ${options.companyInn}`, { align: 'center' });
-      }
-      if (options?.companyAddress) {
+        }
+        if (options?.companyAddress) {
         doc.fontSize(bodyFontSize).text(options.companyAddress, { align: 'center' });
-      }
+        }
 
-      doc.moveDown(0.5);
-      doc.fontSize(bodyFontSize).text('------------------------------------------------', { align: 'center' });
+        doc.moveDown(0.5);
+        doc.fontSize(bodyFontSize).text('------------------------------------------------', { align: 'center' });
 
-      // Document type
-      let docTitle = 'КАССОВЫЙ ЧЕК (ПРОДАЖА)';
-      if (operation.operationType === 'RETURN') docTitle = 'КАССОВЫЙ ЧЕК (ВОЗВРАТ)';
-      else if (operation.operationType === 'OPEN_SHIFT') docTitle = 'ОТКРЫТИЕ СМЕНЫ';
-      else if (operation.operationType === 'CLOSE_SHIFT') docTitle = 'ЗАКРЫТИЕ СМЕНЫ (Z-ОТЧЕТ)';
-      else if (operation.operationType === 'DEPOSIT') docTitle = 'ВНЕСЕНИЕ НАЛИЧНЫХ';
-      else if (operation.operationType === 'WITHDRAW') docTitle = 'ВЫПЛАТА НАЛИЧНЫХ';
+        // Document type
+        let docTitle = 'КАССОВЫЙ ЧЕК (ПРОДАЖА)';
+        if (operation.operationType === 'RETURN') docTitle = 'КАССОВЫЙ ЧЕК (ВОЗВРАТ)';
+        else if (operation.operationType === 'OPEN_SHIFT') docTitle = 'ОТКРЫТИЕ СМЕНЫ';
+        else if (operation.operationType === 'CLOSE_SHIFT') docTitle = 'ЗАКРЫТИЕ СМЕНЫ (Z-ОТЧЕТ)';
+        else if (operation.operationType === 'DEPOSIT') docTitle = 'ВНЕСЕНИЕ НАЛИЧНЫХ';
+        else if (operation.operationType === 'WITHDRAW') docTitle = 'ВЫПЛАТА НАЛИЧНЫХ';
 
-      doc.fontSize(titleFontSize).text(docTitle, { align: 'center' });
+        doc.fontSize(titleFontSize).text(docTitle, { align: 'center' });
       doc.fontSize(bodyFontSize).text(`Дата/время: ${fiscalResult.fiscalDateTime || new Date().toISOString()}`);
       if (fiscalResult.shiftNumber) {
         doc.text(`Смена: №${fiscalResult.shiftNumber}`);
@@ -139,10 +144,9 @@ export class MoySkladReceiptGenerator {
       if (fiscalResult.fiscalDocNumber) doc.text(`ФД: №${fiscalResult.fiscalDocNumber}`);
       if (fiscalResult.fiscalDocSign) doc.text(`ФПД: ${fiscalResult.fiscalDocSign}`);
       
-      // QR Code representation
-      if (fiscalResult.qrCodeUrl) {
+      if (qrCodeBuffer) {
         doc.moveDown(0.5);
-        doc.text(`[QR-CODE 20x20mm: ${fiscalResult.qrCodeUrl}]`, { align: 'center' });
+        doc.image(qrCodeBuffer, { fit: [56.7, 56.7], align: 'center' });
       }
 
       doc.text('ФИСКАЛЬНЫЙ ДОКУМЕНТ ГНС КР', { align: 'center' });

@@ -56,6 +56,7 @@ export class InMemoryIdempotencyStore implements IIdempotencyStore {
 
 export class IdempotencyManager {
   private store: IIdempotencyStore;
+  private locks: Map<string, Promise<void>> = new Map();
 
   constructor(store?: IIdempotencyStore) {
     this.store = store || new InMemoryIdempotencyStore();
@@ -102,10 +103,11 @@ export class IdempotencyManager {
       op.operationType,
       op.externalOperationId
     );
-    const hash = op.payloadHash || this.calculateHash(op.rawExternalPayload || op);
+    return this.withKeyLock(key, async () => {
+      const hash = op.payloadHash || this.calculateHash(op.rawExternalPayload || op);
 
-    const existing = await this.store.get(key);
-    if (!existing) {
+      const existing = await this.store.get(key);
+      if (!existing) {
       // First time seeing this operation
       const record: IdempotencyRecord = {
         key,
@@ -119,12 +121,12 @@ export class IdempotencyManager {
         updatedAt: new Date().toISOString()
       };
       await this.store.set(record);
-      return { action: 'PROCEED', key, hash };
-    }
+        return { action: 'PROCEED', key, hash };
+      }
 
     // Existing record found
     // 1. Check if hash matches
-    if (existing.payloadHash !== hash) {
+      if (existing.payloadHash !== hash) {
       return {
         action: 'REJECT',
         error: {
@@ -134,17 +136,17 @@ export class IdempotencyManager {
           httpStatusCode: 409
         }
       };
-    }
+      }
 
     // 2. Check existing status
-    if (existing.status === OperationStatus.SUCCESS && existing.result) {
+      if (existing.status === OperationStatus.SUCCESS && existing.result) {
       return {
         action: 'RETURN_CACHED',
         result: existing.result
       };
-    }
+      }
 
-    if (existing.status === OperationStatus.PROCESSING) {
+      if (existing.status === OperationStatus.PROCESSING) {
       return {
         action: 'REJECT',
         error: {
@@ -154,9 +156,9 @@ export class IdempotencyManager {
           httpStatusCode: 429
         }
       };
-    }
+      }
 
-    if (existing.status === OperationStatus.UNKNOWN) {
+      if (existing.status === OperationStatus.UNKNOWN) {
       return {
         action: 'REJECT',
         error: {
@@ -166,18 +168,37 @@ export class IdempotencyManager {
           httpStatusCode: 504
         }
       };
-    }
+      }
 
-    if (existing.status === OperationStatus.FAILED) {
+      if (existing.status === OperationStatus.FAILED) {
       // Allow retry if previously failed
       await this.store.update(key, {
         status: OperationStatus.PROCESSING,
         updatedAt: new Date().toISOString()
       });
-      return { action: 'PROCEED', key, hash };
-    }
+        return { action: 'PROCEED', key, hash };
+      }
 
-    return { action: 'PROCEED', key, hash };
+      return { action: 'PROCEED', key, hash };
+    });
+  }
+
+  private async withKeyLock<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(key) || Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => current);
+    this.locks.set(key, queued);
+
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+      if (this.locks.get(key) === queued) this.locks.delete(key);
+    }
   }
 
   /**

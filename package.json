@@ -23,9 +23,11 @@
   "author": "SmartDev",
   "license": "UNLICENSED",
   "dependencies": {
+    "@types/qrcode": "^1.5.6",
     "adm-zip": "^0.5.16",
     "fastify": "^4.28.1",
     "pdfkit": "^0.15.0",
+    "qrcode": "^1.5.4",
     "ws": "^8.18.0"
   },
   "devDependencies": {

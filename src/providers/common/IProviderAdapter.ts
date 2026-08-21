@@ -41,6 +41,8 @@ export interface IProviderAdapter {
     body: unknown;
   }>;
 
+  recordFiscalResult?(operation: NormalizedFiscalOperation, result: FiscalResult): Promise<void> | void;
+
   /**
    * Generates receipt payload (e.g. PDF/ZIP/Base64 for MoySklad or raw text/JSON)
    */

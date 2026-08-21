@@ -4,10 +4,13 @@ import { MoySkladProviderAdapter } from '../providers/moysklad/moySkladProviderA
 import { MockProviderAdapter } from '../providers/mock/mockProviderAdapter';
 import { LicenseServer } from '../licensing/server/licenseServer';
 import { GatewayWsServer, WsAgentTransport } from './transport/gatewayWsServer';
+import { EncryptedFileMoySkladInstallationStore } from '../providers/moysklad/security/moySkladSecurity';
+import { FiscalResult } from '../core/operations/types';
 
 export interface GatewayAppOptions {
   orchestrator?: IntegrationOrchestrator;
   licenseServer?: LicenseServer;
+  validateAgentToken?: (agentId: string, token: string) => boolean;
 }
 
 export function buildGatewayApp(options?: GatewayAppOptions): {
@@ -18,10 +21,31 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
 } {
   const fastify = Fastify({ logger: false });
   const orchestrator = options?.orchestrator || new IntegrationOrchestrator();
-  const licenseServer = options?.licenseServer || new LicenseServer();
+  const licenseServer = options?.licenseServer || new LicenseServer({
+    storagePath: process.env.SMARTDEV_LICENSE_STORAGE_PATH,
+    storageKey: process.env.SMARTDEV_LICENSE_STORAGE_KEY,
+    tokenSecret: process.env.SMARTDEV_LICENSE_TOKEN_SECRET,
+    rebindSecret: process.env.SMARTDEV_REBIND_SECRET
+  });
+
+  fastify.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
+    const rawBody = body as string;
+    (request as FastifyRequest & { rawBody?: string }).rawBody = rawBody;
+    try {
+      done(null, JSON.parse(rawBody));
+    } catch (error) {
+      done(error as Error, undefined);
+    }
+  });
 
   // Register Provider Adapters
-  const msAdapter = new MoySkladProviderAdapter(orchestrator.auditLogger);
+  const installationStore = process.env.MOYSKLAD_STORAGE_PATH && process.env.MOYSKLAD_STORAGE_KEY
+    ? new EncryptedFileMoySkladInstallationStore(
+        process.env.MOYSKLAD_STORAGE_PATH,
+        process.env.MOYSKLAD_STORAGE_KEY
+      )
+    : undefined;
+  const msAdapter = new MoySkladProviderAdapter(orchestrator.auditLogger, installationStore);
   const mockAdapter = new MockProviderAdapter();
 
   if (!orchestrator.providerRegistry.get('MOYSKLAD')) {
@@ -39,6 +63,7 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
     onAgentDisconnected: (agentId: string) => {
       orchestrator.routingService.unregisterAgentTransport(agentId);
     },
+    validateAgentToken: options?.validateAgentToken,
     auditLogger: orchestrator.auditLogger
   });
 
@@ -56,6 +81,8 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
   // ==========================================
   fastify.post('/vendor/1.0/apps/:appId/:accountId', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
+    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, appId, accountId);
+    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const body = (req.body || {}) as Record<string, unknown>;
     const res = await msAdapter.handleVendorLifecycle({
       action: 'INSTALL',
@@ -68,6 +95,8 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
 
   fastify.put('/vendor/1.0/apps/:appId/:accountId', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
+    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, appId, accountId);
+    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const body = (req.body || {}) as Record<string, unknown>;
     const res = await msAdapter.handleVendorLifecycle({
       action: 'SETTINGS_UPDATE',
@@ -80,6 +109,8 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
 
   fastify.delete('/vendor/1.0/apps/:appId/:accountId', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
+    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, appId, accountId);
+    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const res = await msAdapter.handleVendorLifecycle({
       action: 'DELETE',
       appId,
@@ -91,6 +122,8 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
 
   fastify.post('/vendor/1.0/apps/:appId/:accountId/suspend', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
+    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, appId, accountId);
+    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const res = await msAdapter.handleVendorLifecycle({
       action: 'SUSPEND',
       appId,
@@ -102,6 +135,8 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
 
   fastify.post('/vendor/1.0/apps/:appId/:accountId/resume', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
+    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, appId, accountId);
+    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const res = await msAdapter.handleVendorLifecycle({
       action: 'RESUME',
       appId,
@@ -123,6 +158,7 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
     const res = await orchestrator.handleFiscalRequest('MOYSKLAD', {
       headers,
       body,
+      rawBody: (req as FastifyRequest & { rawBody?: string }).rawBody,
       url,
       method
     });
@@ -190,6 +226,39 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
   fastify.post('/api/v1/module/verify', async (req: FastifyRequest, reply: FastifyReply) => {
     const res = await licenseServer.verify(req.body as any);
     return reply.status(res.valid ? 200 : 403).send(res);
+  });
+
+  fastify.get('/api/v1/module/license', async (req: FastifyRequest, reply: FastifyReply) => {
+    const authorization = req.headers.authorization;
+    const deviceToken = authorization?.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length)
+      : undefined;
+    if (!deviceToken) {
+      return reply.status(401).send({ success: false, error: 'Bearer device_token is required.' });
+    }
+    const license = licenseServer.getLicenseByDeviceToken(deviceToken);
+    return license
+      ? reply.status(200).send({ success: true, ...license })
+      : reply.status(401).send({ success: false, error: 'Invalid device_token.' });
+  });
+
+  fastify.post('/api/v1/operations/reconcile', async (req: FastifyRequest, reply: FastifyReply) => {
+    const expectedToken = process.env.SMARTDEV_RECONCILIATION_TOKEN;
+    const suppliedToken = req.headers['x-reconciliation-token'];
+    if (!expectedToken || suppliedToken !== expectedToken) {
+      return reply.status(401).send({ success: false, error: 'Reconciliation authorization failed.' });
+    }
+    const body = req.body as { providerCode?: string; key?: string; result?: FiscalResult };
+    if (!body?.providerCode || !body.key || !body.result) {
+      return reply.status(400).send({ success: false, error: 'providerCode, key and result are required.' });
+    }
+    try {
+      await orchestrator.reconcileUnknown(body.providerCode, body.key, body.result);
+      return reply.status(200).send({ success: true });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.status(409).send({ success: false, error: message });
+    }
   });
 
   fastify.post('/api/v1/module/heartbeat', async (req: FastifyRequest, reply: FastifyReply) => {

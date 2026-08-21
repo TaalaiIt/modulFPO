@@ -47,7 +47,7 @@ export class MoySkladMapper {
     const shift = (body.retailShift as Record<string, unknown>) || {};
     const meta = (shift.meta as Record<string, unknown>) || {};
     const externalId = (meta.id as string) || `shift-${Date.now()}`;
-    const storeMeta = (body.retailStore as Record<string, unknown>)?.meta as Record<string, unknown>;
+    const storeMeta = ((body.retailStore || body.retailstore) as Record<string, unknown>)?.meta as Record<string, unknown>;
     const storeId = (storeMeta?.id as string) || (body.retailStoreId as string) || 'default-store';
 
     return {
@@ -64,10 +64,10 @@ export class MoySkladMapper {
 
   private mapSale(accountId: string, body: Record<string, unknown>): NormalizedFiscalOperation {
     const demand = (body.demand as Record<string, unknown>) || {};
-    const meta = (demand.meta as Record<string, unknown>) || {};
+    const meta = (body.meta as Record<string, unknown>) || (demand.meta as Record<string, unknown>) || {};
     const externalId = (meta.id as string) || (body.id as string) || `demand-${Date.now()}`;
 
-    const store = (body.retailStore as Record<string, unknown>) || {};
+    const store = ((body.retailStore || body.retailstore) as Record<string, unknown>) || {};
     const storeMeta = (store.meta as Record<string, unknown>) || {};
     const storeId = (storeMeta.id as string) || (body.retailStoreId as string) || 'default-store';
 
@@ -77,24 +77,42 @@ export class MoySkladMapper {
       inn: (cashierObj.inn as string) || undefined
     };
 
-    const rawPositions = (body.positions as Array<Record<string, unknown>>) || [];
+    if (!Array.isArray(body.positions) || body.positions.length === 0) {
+      throw new Error('Fiscal sale must contain at least one position.');
+    }
+
+    const rawPositions = body.positions as Array<Record<string, unknown>>;
     const items: FiscalItem[] = rawPositions.map((pos) => {
       const assortment = (pos.assortment as Record<string, unknown>) || {};
       const name = (assortment.name as string) || (pos.name as string) || 'Товар';
       
       // Handle prices in cents/kopecks (divide by 100 if integer >= 1000 and priceUnit indicates cents)
       const rawPrice = Number(pos.price || 0);
-      const rawCost = Number(pos.cost || (rawPrice * Number(pos.quantity || 1)));
       const quantity = Number(pos.quantity || 1);
+      const discount = Number(pos.discount || 0);
+      const rawCost = Number(pos.cost ?? (rawPrice * quantity * (1 - discount / 100)));
+
+      if (!Number.isFinite(rawPrice) || rawPrice < 0 || !Number.isFinite(rawCost) || rawCost < 0) {
+        throw new Error(`Invalid fiscal position amount for ${name}.`);
+      }
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error(`Invalid fiscal position quantity for ${name}.`);
+      }
 
       // Taxes
       const vatNum = Number(pos.vat);
+      if (pos.vat !== undefined && ![0, 12].includes(vatNum)) {
+        throw new Error(`Unsupported VAT rate for ${name}: ${String(pos.vat)}.`);
+      }
       let vatRate: VatRate = VatRate.VAT_0;
       if (vatNum === 12) vatRate = VatRate.VAT_12;
       else if (isNaN(vatNum) || vatNum === 0) vatRate = VatRate.VAT_0;
 
       // Custom attributes for ST & CalcItemAttribute
       const stNum = Number(pos.salesTax || pos.st || 0);
+      if (![0, 1, 2, 3, 5].includes(stNum)) {
+        throw new Error(`Unsupported sales tax rate for ${name}: ${String(pos.salesTax || pos.st)}.`);
+      }
       let salesTaxRate: SalesTaxRate = SalesTaxRate.ST_0;
       if (stNum === 1) salesTaxRate = SalesTaxRate.ST_1;
       else if (stNum === 2) salesTaxRate = SalesTaxRate.ST_2;
@@ -102,7 +120,12 @@ export class MoySkladMapper {
       else if (stNum === 5) salesTaxRate = SalesTaxRate.ST_5;
 
       const calcItemAttributeCode = pos.calcItemAttributeCode ? Number(pos.calcItemAttributeCode) : 1;
-      const sgtin = (pos.trackingCode as string) || (pos.sgtin as string) || (pos.gln as string);
+      const marks = Array.isArray(pos.marks) ? pos.marks : [];
+      const firstMark = marks[0];
+      const markCode = typeof firstMark === 'string'
+        ? firstMark
+        : (firstMark as Record<string, unknown> | undefined)?.cis as string | undefined;
+      const sgtin = (pos.trackingCode as string) || (pos.sgtin as string) || markCode || (pos.gln as string);
 
       return {
         name,
@@ -115,14 +138,20 @@ export class MoySkladMapper {
         },
         calcItemAttributeCode,
         sgtin,
-        measureUnit: (pos.measureUnit as string) || 'шт'
+        measureUnit: ((pos.uom as Record<string, unknown>)?.name as string) || (pos.measureUnit as string) || 'шт'
       };
     });
 
-    const cashSum = Number(body.cashSum || 0);
-    const cardSum = Number(body.cardSum || 0);
-    const qrSum = Number(body.qrSum || 0);
-    const prepaySum = Number(body.prepaySum || 0);
+    const paymentsBody = (body.payments as Record<string, unknown>) || body;
+    const cashSum = Number(paymentsBody.cashSum || 0);
+    const cardSum = Number(paymentsBody.cardSum || 0);
+    const qrSum = Number(paymentsBody.qrSum || 0);
+    const prepaySum =
+      Number(paymentsBody.prepaySum || 0) +
+      Number(paymentsBody.prepaymentCashSum || 0) +
+      Number(paymentsBody.prepaymentCardSum || 0) +
+      Number(paymentsBody.prepaymentQrSum || 0) +
+      Number(paymentsBody.advanceSum || 0);
 
     const payments = [];
     if (cashSum > 0) payments.push({ method: PaymentMethod.CASH, sum: cashSum });
@@ -154,15 +183,21 @@ export class MoySkladMapper {
 
   private mapReturn(accountId: string, body: Record<string, unknown>): NormalizedFiscalOperation {
     const salesReturn = (body.salesReturn as Record<string, unknown>) || {};
-    const meta = (salesReturn.meta as Record<string, unknown>) || {};
+    const meta = (body.meta as Record<string, unknown>) || (salesReturn.meta as Record<string, unknown>) || {};
     const externalId = (meta.id as string) || (body.id as string) || `return-${Date.now()}`;
 
     const demand = (body.demand as Record<string, unknown>) || {};
     const originDemandId = (demand.meta as Record<string, unknown>)?.id as string;
 
-    const store = (body.retailStore as Record<string, unknown>) || {};
+    const store = ((body.retailStore || body.retailstore) as Record<string, unknown>) || {};
     const storeMeta = (store.meta as Record<string, unknown>) || {};
     const storeId = (storeMeta.id as string) || (body.retailStoreId as string) || 'default-store';
+    const originFdNumber = Number(body.originFdNumber);
+    const originFnSerialNumber = body.originFnSerialNumber as string | undefined;
+
+    if (!Number.isInteger(originFdNumber) || originFdNumber <= 0 || !originFnSerialNumber) {
+      throw new Error('Return operation requires originFdNumber and originFnSerialNumber.');
+    }
 
     const saleOp = this.mapSale(accountId, body);
 
@@ -172,12 +207,10 @@ export class MoySkladMapper {
       externalOperationId: externalId,
       operationType: OperationType.RETURN,
       storeId,
-      originFiscalDoc: body.originFdNumber
-        ? {
-            originFdNumber: Number(body.originFdNumber),
-            originFnSerialNumber: (body.originFnSerialNumber as string) || 'FM9876543210'
-          }
-        : undefined,
+      originFiscalDoc: {
+        originFdNumber,
+        originFnSerialNumber
+      },
       metadata: {
         originDemandId
       }
@@ -188,9 +221,9 @@ export class MoySkladMapper {
     const cashIn = (body.cashIn as Record<string, unknown>) || {};
     const meta = (cashIn.meta as Record<string, unknown>) || {};
     const externalId = (meta.id as string) || `cashin-${Date.now()}`;
-    const storeMeta = (body.retailStore as Record<string, unknown>)?.meta as Record<string, unknown>;
+    const storeMeta = ((body.retailStore || body.retailstore) as Record<string, unknown>)?.meta as Record<string, unknown>;
     const storeId = (storeMeta?.id as string) || 'default-store';
-    const sum = Number(body.sum || 0);
+    const sum = typeof body.sum === 'string' ? Number(body.sum) / 100 : Number(body.sum || 0);
 
     return {
       operationId: `ms-cashin-${externalId}`,
@@ -208,11 +241,11 @@ export class MoySkladMapper {
 
   private mapWithdraw(accountId: string, body: Record<string, unknown>): NormalizedFiscalOperation {
     const cashOut = (body.cashOut as Record<string, unknown>) || {};
-    const meta = (cashOut.meta as Record<string, unknown>) || {};
+    const meta = (body.meta as Record<string, unknown>) || (cashOut.meta as Record<string, unknown>) || {};
     const externalId = (meta.id as string) || `cashout-${Date.now()}`;
-    const storeMeta = (body.retailStore as Record<string, unknown>)?.meta as Record<string, unknown>;
+    const storeMeta = ((body.retailStore || body.retailstore) as Record<string, unknown>)?.meta as Record<string, unknown>;
     const storeId = (storeMeta?.id as string) || 'default-store';
-    const sum = Number(body.sum || 0);
+    const sum = typeof body.sum === 'string' ? Number(body.sum) / 100 : Number(body.sum || 0);
 
     return {
       operationId: `ms-cashout-${externalId}`,
@@ -232,7 +265,7 @@ export class MoySkladMapper {
     const shift = (body.retailShift as Record<string, unknown>) || {};
     const meta = (shift.meta as Record<string, unknown>) || {};
     const externalId = (meta.id as string) || `shift-${Date.now()}`;
-    const storeMeta = (body.retailStore as Record<string, unknown>)?.meta as Record<string, unknown>;
+    const storeMeta = ((body.retailStore || body.retailstore) as Record<string, unknown>)?.meta as Record<string, unknown>;
     const storeId = (storeMeta?.id as string) || 'default-store';
 
     return {
@@ -264,6 +297,8 @@ export class MoySkladMapper {
             {
               code: result.error?.code || 'FISCAL_ERROR',
               error: result.error?.message || 'Fiscal operation failed',
+              error_message: result.error?.message || 'Fiscal operation failed',
+              parameter: result.error?.details?.parameter,
               details: result.error?.details
             }
           ]

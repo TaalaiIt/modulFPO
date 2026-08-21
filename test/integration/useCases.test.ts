@@ -47,6 +47,16 @@ describe('SmartDev FPO Integration — End-to-End Use Cases Suite (UC-01 .. UC-2
     orchestrator.providerRegistry.register(msAdapter);
     orchestrator.providerRegistry.register(mockAdapter);
 
+    await msAdapter.handleVendorLifecycle({
+      action: 'INSTALL',
+      appId: 'app-smartdev-fpo',
+      accountId: TEST_ACCOUNT_ID,
+      payload: {
+        access_token: 'ms_access_token_val',
+        additional: { fiscalApi: { id: 'fiscal-api-test', token: 'PUBLIC_RSA_KEY_TEST' } }
+      }
+    });
+
     // Direct dispatch handler for tests
     orchestrator.setDirectDispatchHandler(async (op: any) => {
       return agentService.executeOperation(op);
@@ -737,7 +747,7 @@ describe('SmartDev FPO Integration — End-to-End Use Cases Suite (UC-01 .. UC-2
 
       piratedClient.loadCache({
         licenseKey: 'LIC-SMARTDEV-TEST-001',
-        deviceToken: 'token',
+        deviceToken: licenseClient.getCachedData()!.deviceToken,
         agentId: TEST_AGENT_ID,
         hardwareId: TEST_HWID, // Original HWID in cache, but current is HWID-COPIED
         entitlements: licenseServer.getLicense('LIC-SMARTDEV-TEST-001')!.entitlements,
@@ -750,7 +760,7 @@ describe('SmartDev FPO Integration — End-to-End Use Cases Suite (UC-01 .. UC-2
       expect(checkPirated.errorCode).toBe('HARDWARE_MISMATCH');
 
       // Rebind to new machine authorized by admin
-      await licenseServer.rebind({
+      const rebindResult = await licenseServer.rebind({
         licenseKey: 'LIC-SMARTDEV-TEST-001',
         agentId: TEST_AGENT_ID,
         newHardwareId: 'HWID-COPIED-MACHINE-99',
@@ -760,6 +770,7 @@ describe('SmartDev FPO Integration — End-to-End Use Cases Suite (UC-01 .. UC-2
       // Now update client cache HWID
       piratedClient.loadCache({
         ...piratedClient.getCachedData()!,
+        deviceToken: rebindResult.newDeviceToken,
         hardwareId: 'HWID-COPIED-MACHINE-99'
       });
 

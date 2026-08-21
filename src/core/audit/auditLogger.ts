@@ -50,7 +50,7 @@ export class AuditLogger {
     if (!filter) return [...this.records];
     return this.records.filter((rec) => {
       for (const [k, v] of Object.entries(filter)) {
-        if ((rec as Record<string, unknown>)[k] !== v) return false;
+        if ((rec as unknown as Record<string, unknown>)[k] !== v) return false;
       }
       return true;
     });

@@ -16,6 +16,7 @@ export interface LicenseSeat {
   hardwareId: string;
   registeredAt: string;
   lastHeartbeatAt: string;
+  deviceToken?: string;
 }
 
 export interface LicenseProviderBinding {

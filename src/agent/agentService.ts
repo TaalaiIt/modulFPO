@@ -1,4 +1,4 @@
-import { IFiscalConnectorClient } from '../fpo/client/fiscalConnectorClient';
+import { HttpFiscalConnectorClient, IFiscalConnectorClient } from '../fpo/client/fiscalConnectorClient';
 import { FpoRecoveryEngine, RecoveryCredentials } from '../fpo/recovery/fpoRecoveryEngine';
 import { LicenseClient } from '../licensing/client/licenseClient';
 import { SecureLocalStorage, LocalAgentSecrets } from './secureStorage';
@@ -142,6 +142,14 @@ export class AgentService {
         message: 'Agent credentials not initialized in local secure storage.',
         isRetryable: false,
         httpStatusCode: 500
+      });
+    }
+
+    if (this.fpoClient instanceof HttpFiscalConnectorClient) {
+      const paperWidth = operation.metadata?.paperWidthMm;
+      this.fpoClient.configure({
+        registrationNumber: (operation.metadata?.registrationNumber as string | undefined) || secrets.rnm,
+        receiptWidthMm: paperWidth === 56 ? 56 : 80
       });
     }
 

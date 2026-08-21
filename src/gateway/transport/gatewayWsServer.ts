@@ -1,4 +1,4 @@
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer, WebSocket, RawData } from 'ws';
 import { IncomingMessage } from 'http';
 import { IAgentTransport } from '../../core/routing/routingService';
 import { AuditLogger, AuditEventType } from '../../core/audit/auditLogger';
@@ -20,7 +20,7 @@ export class WsAgentTransport implements IAgentTransport {
     this.ws = ws;
     this.auditLogger = auditLogger;
 
-    this.ws.on('message', (data: WebSocket.RawData) => {
+    this.ws.on('message', (data: RawData) => {
       try {
         const msg = JSON.parse(data.toString());
         if (msg.type === 'COMMAND_RESULT') {
@@ -76,15 +76,18 @@ export class GatewayWsServer {
   private wss: WebSocketServer | null = null;
   private onAgentConnected?: (agentId: string, transport: WsAgentTransport) => void;
   private onAgentDisconnected?: (agentId: string) => void;
+  private validateAgentToken?: (agentId: string, token: string) => boolean;
   private auditLogger?: AuditLogger;
 
   constructor(options?: {
     onAgentConnected?: (agentId: string, transport: WsAgentTransport) => void;
     onAgentDisconnected?: (agentId: string) => void;
+    validateAgentToken?: (agentId: string, token: string) => boolean;
     auditLogger?: AuditLogger;
   }) {
     this.onAgentConnected = options?.onAgentConnected;
     this.onAgentDisconnected = options?.onAgentDisconnected;
+    this.validateAgentToken = options?.validateAgentToken;
     this.auditLogger = options?.auditLogger;
   }
 
@@ -95,7 +98,8 @@ export class GatewayWsServer {
       const url = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`);
       if (url.pathname === '/agent-ws') {
         const agentId = url.searchParams.get('agentId');
-        if (!agentId) {
+        const token = url.searchParams.get('token');
+        if (!agentId || !token || (this.validateAgentToken && !this.validateAgentToken(agentId, token))) {
           socket.destroy();
           return;
         }

@@ -62,6 +62,10 @@ describe('FPO Subsystem Unit Tests', () => {
   });
 
   describe('FpoRecoveryEngine (UC-16, UC-17)', () => {
+    beforeEach(async () => {
+      await mockFpo.openShift();
+    });
+
     it('should automatically recover from error 40417 NOT_VERIFY_PIN (UC-16)', async () => {
       mockFpo.updateConfig({ simulate40417Once: true });
 

@@ -38,6 +38,40 @@ export class IntegrationOrchestrator {
     this.directDispatchHandler = handler;
   }
 
+  public async reconcileUnknown(
+    providerCode: string,
+    key: string,
+    result: FiscalResult
+  ): Promise<void> {
+    const adapter = this.providerRegistry.getOrThrow(providerCode);
+    const record = await this.idempotencyManager.getRecord(key);
+    if (!record || record.status !== OperationStatus.UNKNOWN) {
+      throw new Error(`Operation ${key} is not in UNKNOWN state.`);
+    }
+    if (result.operationId !== record.externalOperationId && result.externalOperationId !== record.externalOperationId) {
+      throw new Error(`Reconciliation result does not match operation ${key}.`);
+    }
+    await this.idempotencyManager.resolveUnknown(key, result);
+    this.auditLogger.log({
+      eventType: AuditEventType.OPERATION_RECONCILED,
+      providerCode,
+      providerAccountId: record.providerAccountId,
+      externalOperationId: record.externalOperationId,
+      fiscalDocNumber: result.fiscalDocNumber,
+      fiscalDocSign: result.fiscalDocSign,
+      message: `UNKNOWN operation ${key} reconciled without blind retry.`
+    });
+    adapter.recordFiscalResult?.({
+      operationId: result.operationId,
+      providerCode,
+      providerAccountId: record.providerAccountId,
+      externalOperationId: record.externalOperationId,
+      operationType: record.operationType as NormalizedFiscalOperation['operationType'],
+      storeId: 'reconciled',
+      createdAt: new Date().toISOString()
+    }, result);
+  }
+
   /**
    * Main entry point for all incoming external fiscal requests
    */
@@ -80,8 +114,27 @@ export class IntegrationOrchestrator {
       }
     }
 
-    // 2. Map to NormalizedFiscalOperation
-    const operation = await adapter.mapToNormalized(rawRequest);
+    // 2. Map and validate the provider payload before touching idempotency or FPO
+    let operation: NormalizedFiscalOperation;
+    try {
+      operation = await adapter.mapToNormalized(rawRequest);
+    } catch (mappingErr: unknown) {
+      const message = mappingErr instanceof Error ? mappingErr.message : String(mappingErr);
+      const errorResult = this.createErrorResult(
+        'unknown',
+        providerCode,
+        'unknown',
+        'unknown',
+        {
+          code: 'INVALID_PROVIDER_PAYLOAD',
+          message,
+          isRetryable: false,
+          httpStatusCode: 400
+        }
+      );
+      const providerRes = await adapter.mapToProviderResponse(errorResult);
+      return { ...providerRes, rawResult: errorResult };
+    }
 
     this.auditLogger.log({
       eventType: AuditEventType.OPERATION_RECEIVED,
@@ -137,6 +190,12 @@ export class IntegrationOrchestrator {
     );
 
     const targetAgentId = operation.agentId || storeBinding?.agentId || 'default-agent';
+    operation.agentId = targetAgentId;
+    operation.metadata = {
+      ...operation.metadata,
+      registrationNumber: storeBinding?.rnm,
+      paperWidthMm: storeBinding?.paperWidthMm
+    };
 
     // 5. Dispatch command to Agent
     let agentResult: FiscalResult;
@@ -217,6 +276,7 @@ export class IntegrationOrchestrator {
       }
 
       await this.idempotencyManager.markSuccess(key, agentResult);
+      adapter.recordFiscalResult?.(operation, agentResult);
 
       this.auditLogger.log({
         eventType: AuditEventType.OPERATION_COMPLETED,
