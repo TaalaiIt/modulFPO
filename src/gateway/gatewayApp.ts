@@ -63,7 +63,10 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
     onAgentDisconnected: (agentId: string) => {
       orchestrator.routingService.unregisterAgentTransport(agentId);
     },
-    validateAgentToken: options?.validateAgentToken,
+    validateAgentToken: options?.validateAgentToken || ((agentId, token) => {
+      const license = licenseServer.getLicenseByDeviceToken(token);
+      return license?.agentId === agentId;
+    }),
     auditLogger: orchestrator.auditLogger
   });
 

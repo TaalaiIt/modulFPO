@@ -442,22 +442,24 @@ orchestrator.providerRegistry.register(new OneCProviderAdapter());
 
 ### 10.2. Переменные окружения Gateway (`.env`)
 ```ini
-PORT=3000
+PORT=8462
 HOST=0.0.0.0
 NODE_ENV=production
+PUBLIC_GATEWAY_URL=https://esepmoysclad.smartdev.kg
 MOYSKLAD_STORAGE_PATH=./data/moysklad-installations.enc
 MOYSKLAD_STORAGE_KEY=<32-byte-or-long-secret>
 SMARTDEV_LICENSE_STORAGE_PATH=./data/licenses.enc
 SMARTDEV_LICENSE_STORAGE_KEY=<32-byte-or-long-secret>
 SMARTDEV_LICENSE_TOKEN_SECRET=<long-random-secret>
 SMARTDEV_REBIND_SECRET=<admin-secret>
+SMARTDEV_RECONCILIATION_TOKEN=<reconciliation-secret>
 ```
 
 ### 10.3. Переменные окружения Fiscal Agent (`.env`)
 ```ini
 AGENT_ID=AGENT-POS-001
-GATEWAY_URL=wss://gateway.smartdev.kg/agent-ws
-LICENSE_SERVER_URL=https://gateway.smartdev.kg/api/v1/module
+GATEWAY_URL=wss://esepmoysclad.smartdev.kg/agent-ws
+LICENSE_SERVER_URL=https://esepmoysclad.smartdev.kg/api/v1/module
 FPO_URL=http://localhost:8080
 ```
 
@@ -478,6 +480,18 @@ node scripts/run-all-tests.js
 # Проверка архитектурной изоляции:
 npm run lint:architecture
 ```
+
+### 10.5. Docker Gateway
+
+```bash
+copy .env.gateway.example .env.gateway
+# Заполнить .env.gateway реальными secrets, затем:
+docker compose up -d --build
+docker compose ps
+docker compose logs -f gateway
+```
+
+Gateway слушает внутренний порт `8462`. Caddy принимает HTTPS для `esepmoysclad.smartdev.kg` на порту `443` и проксирует запросы в Gateway. Fiscal Agent запускается отдельно на кассовом ПК рядом с `FiscalConnector`.
 
 ---
 

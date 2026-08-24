@@ -1,0 +1,3 @@
+esepmoysclad.smartdev.kg {
+    reverse_proxy gateway:8462
+}
