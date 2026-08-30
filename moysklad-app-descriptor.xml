@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Descriptor for a private/test SmartDev FPO server application.
+  The application name, icon, pricing, and publication mode are configured
+  separately in the MoySklad developer cabinet.
+-->
+<ServerApplication xmlns="https://apps-api.moysklad.ru/xml/ns/appstore/app/v2"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="https://apps-api.moysklad.ru/xml/ns/appstore/app/v2 https://apps-api.moysklad.ru/xml/ns/appstore/app/v2/application-v2.xsd">
+  <!-- MoySklad adds /api/moysklad/vendor/1.0 to this base URL. -->
+  <vendorApi>
+    <endpointBase>https://esepmoysclad.smartdev.kg</endpointBase>
+  </vendorApi>
+
+  <!-- Fiscal API requests are sent to /fiscal/1.0/{operation}. -->
+  <fiscalApi>
+    <endpointBase>https://esepmoysclad.smartdev.kg/fiscal</endpointBase>
+    <operationTypes>
+      <openShift/>
+      <retailDemand/>
+      <retailSalesReturn/>
+      <retailDrawerCashIn/>
+      <retailDrawerCashOut/>
+      <closeShift/>
+    </operationTypes>
+    <paymentTypes>
+      <cash/>
+      <card/>
+      <cashCard/>
+      <qr/>
+    </paymentTypes>
+  </fiscalApi>
+
+  <access>
+    <resource>https://api.moysklad.ru/api/remap/1.2</resource>
+    <scope>admin</scope>
+  </access>
+</ServerApplication>

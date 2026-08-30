@@ -19,7 +19,12 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
   licenseServer: LicenseServer;
   wsServer: GatewayWsServer;
 } {
-  const fastify = Fastify({ logger: false });
+  const fastify = Fastify({
+    logger: false,
+    // MoySklad always appends this prefix to vendorApi.endpointBase.
+    // Keep the original routes working for existing clients.
+    rewriteUrl: (request) => (request.url || '').replace(/^\/api\/moysklad\/vendor\/1\.0(?=\/|$)/, '/vendor/1.0')
+  });
   const orchestrator = options?.orchestrator || new IntegrationOrchestrator();
   const licenseServer = options?.licenseServer || new LicenseServer({
     storagePath: process.env.SMARTDEV_LICENSE_STORAGE_PATH,
