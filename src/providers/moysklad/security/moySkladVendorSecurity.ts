@@ -4,9 +4,7 @@ export class MoySkladVendorSecurity {
   constructor(private readonly secret?: string) {}
 
   public verify(
-    headers: Record<string, string | string[] | undefined>,
-    appId: string,
-    accountId: string
+    headers: Record<string, string | string[] | undefined>
   ): { valid: boolean; error?: string } {
     if (process.env.NODE_ENV === 'test') return { valid: true };
 
@@ -24,15 +22,8 @@ export class MoySkladVendorSecurity {
       if (parts.length !== 3) return { valid: false, error: 'Vendor API JWT is malformed.' };
       const [encodedHeader, encodedPayload, encodedSignature] = parts;
       const header = JSON.parse(this.decode(encodedHeader)) as { alg?: string; typ?: string };
-      const payload = JSON.parse(this.decode(encodedPayload)) as {
-        appId?: string;
-        accountId?: string;
-        exp?: number;
-      };
+      const payload = JSON.parse(this.decode(encodedPayload)) as { exp?: number };
       if (header.alg !== 'HS256') return { valid: false, error: 'Unsupported Vendor API JWT algorithm.' };
-      if (payload.appId !== appId || payload.accountId !== accountId) {
-        return { valid: false, error: 'Vendor API JWT tenant mismatch.' };
-      }
       if (payload.exp !== undefined && payload.exp <= Math.floor(Date.now() / 1000)) {
         return { valid: false, error: 'Vendor API JWT has expired.' };
       }
