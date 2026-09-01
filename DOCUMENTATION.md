@@ -493,6 +493,33 @@ docker compose logs -f gateway
 
 Gateway слушает внутренний порт `8462`. Caddy принимает HTTPS для `esepmoysclad.smartdev.kg` на порту `443` и проксирует запросы в Gateway. Fiscal Agent запускается отдельно на кассовом ПК рядом с `FiscalConnector`.
 
+### 10.6. Диагностика: Ошибка "Vendor API JWT tenant mismatch"
+
+**Проблема:** При попытке удалить или изменить приложение МойСклад отправляет запрос на DELETE/PUT `/vendor/1.0/apps/{appId}/{accountId}` с HTTP 401 и ошибкой `Vendor API JWT tenant mismatch`.
+
+**Причины:**
+1. **JWT токен из другого аккаунта** — МойСклад отправляет токен, который не принадлежит указанному в URL `accountId`.
+2. **Токен истёк или был отозван** — на стороне МойСклада токен больше не действителен.
+3. **Конфликт при регистрации** — если приложение было установлено на один аккаунт, а удаляется с другого.
+
+**Решение (реализовано в SmartDev):**
+- Gateway теперь проверяет соответствие `tenant_id` (или `accountId`) из JWT токена с `accountId` в URL при обработке операций жизненного цикла (DELETE, SUSPEND, RESUME).
+- Если токен не принадлежит указанному аккаунту, запрос немедленно отклоняется с ответом `401 Unauthorized` и сообщением `"Vendor API JWT tenant mismatch"`.
+- Проверка выполняется в [MoySkladVendorSecurity.verify()](/src/providers/moysklad/security/moySkladVendorSecurity.ts#L6) и применяется ко всем Vendor API маршрутам.
+
+**Как проверить:**
+```bash
+# 1. Убедиться, что токен в заголовке Authorization соответствует accountId в URL:
+curl -H "Authorization: Bearer <JWT_TOKEN>" \
+     -H "X-Lognex-Vendor-JWT: <JWT_TOKEN>" \
+     -X DELETE https://esepmoysclad.smartdev.kg/vendor/1.0/apps/{appId}/{accountId}
+
+# 2. Если ошибка persists, проверить JWT payload:
+echo "<JWT_TOKEN>" | cut -d. -f2 | base64 -d | jq .
+
+# 3. Убедиться, что поле "tenant_id" или "accountId" в JWT совпадает с {accountId} в URL
+```
+
 ---
 
 ## 11. Сценарии использования (Use Cases UC-01 .. UC-23)

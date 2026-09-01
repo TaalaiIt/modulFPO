@@ -84,9 +84,10 @@ export class MoySkladProviderAdapter implements IProviderAdapter {
   }
 
   public verifyVendorRequest(
-    headers: Record<string, string | string[] | undefined>
-  ): { valid: boolean; error?: string } {
-    return this.vendorSecurity.verify(headers);
+    headers: Record<string, string | string[] | undefined>,
+    expectedAccountId?: string
+  ): { valid: boolean; error?: string; tenantId?: string } {
+    return this.vendorSecurity.verify(headers, expectedAccountId);
   }
 
   public async mapToNormalized(rawRequest: {
