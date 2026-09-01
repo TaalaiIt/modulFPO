@@ -95,7 +95,7 @@ describe('SmartDev FPO Integration — End-to-End Use Cases Suite (UC-01 .. UC-2
           }
         }
       });
-      expect(installRes.status).toBe('SettingsRequired');
+      expect(installRes.status).toBe('Activated');
 
       // 2. Local Agent Diagnostics
       const diag = await agentService.runDiagnostics();

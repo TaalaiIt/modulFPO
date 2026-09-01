@@ -9,7 +9,7 @@ describe('MoySklad Provider Adapter Unit Tests', () => {
   });
 
   describe('Lifecycle (Vendor API 1.0)', () => {
-    it('should return SettingsRequired on initial app install (UC-01)', async () => {
+    it('should return Activated on initial app install (UC-01)', async () => {
       const res = await adapter.handleVendorLifecycle({
         action: 'INSTALL',
         appId: 'app-fpo-kr',
@@ -25,7 +25,7 @@ describe('MoySklad Provider Adapter Unit Tests', () => {
         }
       });
 
-      expect(res.status).toBe('SettingsRequired');
+      expect(res.status).toBe('Activated');
       expect(adapter.security.getInstallation('acc-ms-01')).toBeDefined();
     });
 

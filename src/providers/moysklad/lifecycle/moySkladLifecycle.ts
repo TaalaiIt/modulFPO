@@ -25,9 +25,20 @@ export class MoySkladLifecycle {
       case 'INSTALL': {
         const additional = (payload.additional as Record<string, unknown>) || {};
         const fiscalApi = (additional.fiscalApi as Record<string, unknown>) || {};
-        const accessToken = (payload.access_token as string) || (payload.accessToken as string) || `tok_${Date.now()}`;
-        const fiscalApiId = fiscalApi.id as string;
-        const fiscalApiPublicKey = (fiscalApi.token as string) || (fiscalApi.publicKey as string);
+        const accessList = Array.isArray(payload.access) ? payload.access : [];
+        const accessItem = accessList[0] as Record<string, unknown> | undefined;
+        const accessToken =
+          (payload.access_token as string) ||
+          (payload.accessToken as string) ||
+          (accessItem?.access_token as string) ||
+          (accessItem?.accessToken as string) ||
+          `tok_${Date.now()}`;
+        const fiscalApiId = (fiscalApi.id as string) || (payload.fiscalApiId as string);
+        const fiscalApiPublicKey =
+          (fiscalApi.token as string) ||
+          (fiscalApi.publicKey as string) ||
+          (payload.fiscalApiToken as string) ||
+          (payload.fiscalApiPublicKey as string);
 
         const installation: MoySkladAppInstallation = {
           appId,
@@ -35,7 +46,7 @@ export class MoySkladLifecycle {
           accessToken,
           fiscalApiId,
           fiscalApiPublicKey,
-          status: 'SettingsRequired', // UC-01: initially SettingsRequired until store/agent paired
+          status: 'Activated',
           retailStoreBindings: new Map(),
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -44,8 +55,8 @@ export class MoySkladLifecycle {
         this.security.registerInstallation(installation);
 
         return {
-          status: 'SettingsRequired',
-          message: 'SmartDev solution installed. Configuration of retail store and local agent is required.'
+          status: 'Activated',
+          message: 'SmartDev solution installed and activated.'
         };
       }
 
