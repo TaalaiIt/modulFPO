@@ -87,10 +87,44 @@ export class MoySkladLifecycle {
       }
 
       case 'SETTINGS_UPDATE': {
-        const inst = this.security.getInstallation(accountId);
+        let inst = this.security.getInstallation(accountId);
+
+        const additional = (payload.additional as Record<string, unknown>) || {};
+        const fiscalApi = (additional.fiscalApi as Record<string, unknown>) || {};
+        const accessList = Array.isArray(payload.access) ? payload.access : [];
+        const accessItem = accessList[0] as Record<string, unknown> | undefined;
+        const accessToken =
+          (payload.access_token as string) ||
+          (payload.accessToken as string) ||
+          (accessItem?.access_token as string) ||
+          (accessItem?.accessToken as string);
+        const fiscalApiId = (fiscalApi.id as string) || (payload.fiscalApiId as string);
+        const fiscalApiPublicKey =
+          (fiscalApi.token as string) ||
+          (fiscalApi.publicKey as string) ||
+          (payload.fiscalApiToken as string) ||
+          (payload.fiscalApiPublicKey as string);
+
         if (!inst) {
-          return { status: 'Error', error: `Installation for account ${accountId} not found.` };
+          inst = {
+            appId,
+            accountId,
+            accessToken: accessToken || `tok_${Date.now()}`,
+            fiscalApiId,
+            fiscalApiPublicKey,
+            status: 'Activated',
+            retailStoreBindings: new Map(),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+          this.security.registerInstallation(inst);
+        } else {
+          if (accessToken) inst.accessToken = accessToken;
+          if (fiscalApiId) inst.fiscalApiId = fiscalApiId;
+          if (fiscalApiPublicKey) inst.fiscalApiPublicKey = fiscalApiPublicKey;
+          inst.updatedAt = new Date().toISOString();
         }
+
         // Save store bindings
         const storeId = payload.storeId as string;
         const agentId = payload.agentId as string;
@@ -99,10 +133,10 @@ export class MoySkladLifecycle {
 
         if (storeId && agentId) {
           inst.retailStoreBindings.set(storeId, { agentId, rnm: rnm || '000123456789', paperWidthMm });
-          inst.status = 'Activated'; // Move to Activated once store is paired (UC-01)
+          inst.status = 'Activated';
         }
 
-        return { status: inst.status, message: 'Settings saved.' };
+        return { status: inst.status || 'Activated', message: 'Settings saved.' };
       }
 
       default:

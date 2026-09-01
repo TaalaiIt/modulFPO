@@ -112,8 +112,9 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
       [accountId, body.accountName as string].filter(Boolean)
     );
     if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
+    const action = body.cause === 'Install' ? 'INSTALL' : 'SETTINGS_UPDATE';
     const res = await msAdapter.handleVendorLifecycle({
-      action: 'SETTINGS_UPDATE',
+      action,
       appId,
       accountId,
       payload: body
