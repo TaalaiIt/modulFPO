@@ -503,21 +503,22 @@ Gateway слушает внутренний порт `8462`. Caddy приним�
 3. **Конфликт при регистрации** — если приложение было установлено на один аккаунт, а удаляется с другого.
 
 **Решение (реализовано в SmartDev):**
-- Gateway теперь проверяет соответствие `tenant_id` (или `accountId`) из JWT токена с `accountId` в URL при обработке операций жизненного цикла (DELETE, SUSPEND, RESUME).
-- Если токен не принадлежит указанному аккаунту, запрос немедленно отклоняется с ответом `401 Unauthorized` и сообщением `"Vendor API JWT tenant mismatch"`.
-- Проверка выполняется в [MoySkladVendorSecurity.verify()](/src/providers/moysklad/security/moySkladVendorSecurity.ts#L6) и применяется ко всем Vendor API маршрутам.
+- Gateway проверяет соответствие `tenant_id`, `accountId`, `accountName` или `sub` из JWT токена со списком допустимых идентификаторов: `accountId` в URL и `accountName` в теле запроса (Body).
+- Если в токене указаны данные тенанта и ни один из них не совпадает с переданными `accountId` / `accountName`, запрос отклоняется с ответом `401 Unauthorized` и сообщением `"Vendor API JWT tenant mismatch"`.
+- Проверка выполняется в [MoySkladVendorSecurity.verify()](/src/providers/moysklad/security/moySkladVendorSecurity.ts#L6) и применяется ко всем Vendor API маршрутам жизненного цикла приложения.
 
 **Как проверить:**
 ```bash
-# 1. Убедиться, что токен в заголовке Authorization соответствует accountId в URL:
+# 1. Проверить запрос удаления или обновления:
 curl -H "Authorization: Bearer <JWT_TOKEN>" \
      -H "X-Lognex-Vendor-JWT: <JWT_TOKEN>" \
-     -X DELETE https://esepmoysclad.smartdev.kg/vendor/1.0/apps/{appId}/{accountId}
+     -X DELETE https://esepmoysclad.smartdev.kg/vendor/1.0/apps/{appId}/{accountId} \
+     -d '{"appUid":"fpomodule.smartdev","accountName":"nurelmalabaev95","cause":"Uninstall"}'
 
 # 2. Если ошибка persists, проверить JWT payload:
 echo "<JWT_TOKEN>" | cut -d. -f2 | base64 -d | jq .
 
-# 3. Убедиться, что поле "tenant_id" или "accountId" в JWT совпадает с {accountId} в URL
+# 3. Убедиться, что переменная MOYSKLAD_VENDOR_JWT_SECRET совпадает с Secret Key из ЛК разработчика МойСклад.
 ```
 
 ---

@@ -89,9 +89,12 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
   // ==========================================
   fastify.post('/vendor/1.0/apps/:appId/:accountId', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
-    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>);
-    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const body = (req.body || {}) as Record<string, unknown>;
+    const vendorAuth = msAdapter.verifyVendorRequest(
+      req.headers as Record<string, string | string[] | undefined>,
+      [accountId, body.accountName as string].filter(Boolean)
+    );
+    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const res = await msAdapter.handleVendorLifecycle({
       action: 'INSTALL',
       appId,
@@ -103,9 +106,12 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
 
   fastify.put('/vendor/1.0/apps/:appId/:accountId', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
-    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, accountId);
-    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const body = (req.body || {}) as Record<string, unknown>;
+    const vendorAuth = msAdapter.verifyVendorRequest(
+      req.headers as Record<string, string | string[] | undefined>,
+      [accountId, body.accountName as string].filter(Boolean)
+    );
+    if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const res = await msAdapter.handleVendorLifecycle({
       action: 'SETTINGS_UPDATE',
       appId,
@@ -117,39 +123,51 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
 
   fastify.delete('/vendor/1.0/apps/:appId/:accountId', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
-    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, accountId);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const vendorAuth = msAdapter.verifyVendorRequest(
+      req.headers as Record<string, string | string[] | undefined>,
+      [accountId, body.accountName as string].filter(Boolean)
+    );
     if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const res = await msAdapter.handleVendorLifecycle({
       action: 'DELETE',
       appId,
       accountId,
-      payload: {}
+      payload: body
     });
     return reply.status(200).send(res);
   });
 
   fastify.post('/vendor/1.0/apps/:appId/:accountId/suspend', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
-    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, accountId);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const vendorAuth = msAdapter.verifyVendorRequest(
+      req.headers as Record<string, string | string[] | undefined>,
+      [accountId, body.accountName as string].filter(Boolean)
+    );
     if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const res = await msAdapter.handleVendorLifecycle({
       action: 'SUSPEND',
       appId,
       accountId,
-      payload: {}
+      payload: body
     });
     return reply.status(200).send(res);
   });
 
   fastify.post('/vendor/1.0/apps/:appId/:accountId/resume', async (req: FastifyRequest<{ Params: { appId: string; accountId: string } }>, reply: FastifyReply) => {
     const { appId, accountId } = req.params;
-    const vendorAuth = msAdapter.verifyVendorRequest(req.headers as Record<string, string | string[] | undefined>, accountId);
+    const body = (req.body || {}) as Record<string, unknown>;
+    const vendorAuth = msAdapter.verifyVendorRequest(
+      req.headers as Record<string, string | string[] | undefined>,
+      [accountId, body.accountName as string].filter(Boolean)
+    );
     if (!vendorAuth.valid) return reply.status(401).send({ errors: [{ error: vendorAuth.error, error_message: vendorAuth.error }] });
     const res = await msAdapter.handleVendorLifecycle({
       action: 'RESUME',
       appId,
       accountId,
-      payload: {}
+      payload: body
     });
     return reply.status(200).send(res);
   });
