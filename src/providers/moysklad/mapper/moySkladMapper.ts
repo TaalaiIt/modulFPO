@@ -281,7 +281,8 @@ export class MoySkladMapper {
   }
 
   /**
-   * Translates Core FiscalResult to MoySklad Fiscal API 1.0 JSON response
+   * Translates Core FiscalResult to MoySklad Fiscal API 1.0 JSON response.
+   * MoySklad requires time in format: YYYY-MM-DD HH:MM:SS
    */
   public mapToProviderResponse(result: FiscalResult): {
     statusCode: number;
@@ -289,15 +290,20 @@ export class MoySkladMapper {
     body: unknown;
   } {
     if (!result.success) {
+      const errCode = typeof result.error?.code === 'number'
+        ? result.error.code
+        : 4000;
+      const errMsg = result.error?.message || 'Fiscal operation failed';
+      console.error(`[MoySkladMapper] ERROR response: code=${errCode} msg=${errMsg}`);
       return {
         statusCode: result.error?.httpStatusCode || 400,
         headers: { 'Content-Type': 'application/json' },
         body: {
           errors: [
             {
-              code: result.error?.code || 'FISCAL_ERROR',
-              error: result.error?.message || 'Fiscal operation failed',
-              error_message: result.error?.message || 'Fiscal operation failed',
+              code: errCode,
+              error: errMsg,
+              error_message: errMsg,
               parameter: result.error?.details?.parameter,
               details: result.error?.details
             }
@@ -306,12 +312,15 @@ export class MoySkladMapper {
       };
     }
 
+    // MoySklad requires time in "YYYY-MM-DD HH:MM:SS" format
+    const timeStr = MoySkladMapper.toMoySkladTime(result.fiscalDateTime);
+
     const responseBody: Record<string, unknown> = {
-      fnNumber: result.fnNumber,
-      kktRegNumber: result.kktRegNumber,
-      fiscalDocNumber: result.fiscalDocNumber,
-      fiscalDocSign: result.fiscalDocSign,
-      time: result.fiscalDateTime || new Date().toISOString()
+      fnNumber: result.fnNumber ?? '',
+      kktRegNumber: result.kktRegNumber ?? '',
+      fiscalDocNumber: result.fiscalDocNumber ?? 0,
+      fiscalDocSign: result.fiscalDocSign ?? '0',
+      time: timeStr
     };
 
     if (result.shiftNumber !== undefined) {
@@ -330,10 +339,22 @@ export class MoySkladMapper {
       responseBody.receipt = result.receipt.data;
     }
 
+    console.log(`[MoySkladMapper] SUCCESS response: fdNumber=${responseBody.fiscalDocNumber} sign=${responseBody.fiscalDocSign} time=${timeStr}`);
+
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
       body: responseBody
     };
+  }
+
+  /**
+   * Convert ISO datetime to MoySklad format: YYYY-MM-DD HH:MM:SS
+   */
+  public static toMoySkladTime(isoDate?: string): string {
+    const d = isoDate ? new Date(isoDate) : new Date();
+    if (isNaN(d.getTime())) return MoySkladMapper.toMoySkladTime(undefined);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   }
 }

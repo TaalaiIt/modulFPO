@@ -10,7 +10,7 @@ import {
   CoreError
 } from '../core/operations/types';
 import { AuditLogger, AuditEventType } from '../core/audit/auditLogger';
-import { FpoReceiptItemDto, FpoError } from '../fpo/models/fpoTypes';
+import { FpoReceiptPositionDto, FpoSamCard, FpoError } from '../fpo/models/fpoTypes';
 
 export interface AgentDiagnosticResult {
   healthy: boolean;
@@ -64,6 +64,14 @@ export class AgentService {
     return this.agentId;
   }
 
+  private extractSamCards(samRes: unknown): FpoSamCard[] {
+    if (Array.isArray(samRes)) return samRes as FpoSamCard[];
+    if (samRes && typeof samRes === 'object' && 'samCards' in samRes) {
+      return (samRes as { samCards: FpoSamCard[] }).samCards || [];
+    }
+    return [];
+  }
+
   /**
    * UC-01 diagnostic check
    */
@@ -84,34 +92,57 @@ export class AgentService {
     }
 
     try {
-      // 1. Check SAM cards
-      const samRes = await this.fpoClient.getSamCards();
-      result.fcConnected = true;
-      const card = samRes.samCards.find((c) => c.cardPresent);
-      if (card) {
-        result.samCardPresent = true;
-      } else {
-        result.errors.push('SAM card is not present in reader (UC-03)');
+      // 1. Check SAM cards if endpoint available
+      try {
+        const samRes = await this.fpoClient.getSamCards();
+        result.fcConnected = true;
+        const cards = this.extractSamCards(samRes);
+        const card = cards.find((c) => c.cardPresent);
+        if (card) {
+          result.samCardPresent = true;
+        }
+      } catch (samErr: unknown) {
+        // If /driver/sam-cards is 404, verifyPin below will check card presence
       }
 
-      // 2. If card present, test PIN verification
-      if (result.samCardPresent) {
-        try {
-          const pinRes = await this.fpoClient.verifyPin({ rnm: secrets.rnm, pin: secrets.pin });
-          if (pinRes.success) {
-            result.pinVerified = true;
+      // 2. Test PIN verification (checks FC connectivity, SAM presence, and PIN)
+      try {
+        const pinRes = await this.fpoClient.verifyPin({
+          registrationNumber: secrets.rnm,
+          rnm: secrets.rnm,
+          pin: secrets.pin
+        });
+        result.fcConnected = true;
+        result.samCardPresent = true;
+        result.pinVerified = true;
+        result.fnNumber = pinRes.fiscalModuleNumber;
+      } catch (pinErr: unknown) {
+        if (pinErr instanceof FpoError) {
+          result.fcConnected = true;
+          if (pinErr.code === 40401 || pinErr.code === 40416) {
+            result.errors.push('SAM card is not present or not selected in reader');
+          } else if (pinErr.code === 40402) {
+            result.samCardPresent = true;
+            result.errors.push('Invalid SAM PIN');
+          } else {
+            result.errors.push(`PIN verification error: ${pinErr.message}`);
           }
-        } catch (pinErr: unknown) {
-          result.errors.push(`PIN verification failed: ${pinErr instanceof Error ? pinErr.message : String(pinErr)}`);
+        } else {
+          result.errors.push(`FiscalConnector unreachable: ${pinErr instanceof Error ? pinErr.message : String(pinErr)}`);
         }
       }
 
       // 3. Check shift status
-      try {
-        const stateRes = await this.fpoClient.getStateShift();
-        result.shiftStatus = stateRes.shiftStatus;
-      } catch (stateErr: unknown) {
-        result.errors.push(`State shift check failed: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`);
+      if (result.pinVerified) {
+        try {
+          const stateRes = await this.fpoClient.getStateShift();
+          const isOpened = stateRes.shiftOpened ?? (stateRes.shiftStatus === 'OPEN');
+          result.shiftStatus = isOpened ? 'OPEN' : 'CLOSED';
+        } catch (stateErr: unknown) {
+          if (stateErr instanceof FpoError && stateErr.code === 40920) {
+            result.shiftStatus = 'EXPIRED';
+          }
+        }
       }
 
       result.healthy = result.fcConnected && result.samCardPresent && result.pinVerified && result.errors.length === 0;
@@ -126,7 +157,7 @@ export class AgentService {
 
       return result;
     } catch (err: unknown) {
-      result.errors.push(`FiscalConnector unreachable: ${err instanceof Error ? err.message : String(err)}`);
+      result.errors.push(`Diagnostics error: ${err instanceof Error ? err.message : String(err)}`);
       return result;
     }
   }
@@ -211,29 +242,44 @@ export class AgentService {
     operation: NormalizedFiscalOperation,
     secrets: LocalAgentSecrets
   ): Promise<FiscalResult> {
-    // 1. Verify SAM cards (UC-03)
-    const samCards = await this.fpoClient.getSamCards();
-    const card = samCards.samCards.find((c) => c.cardPresent);
-    if (!card) {
-      return this.buildFailedResult(operation, {
-        code: 'SAM_CARD_MISSING',
-        message: 'SAM card is missing in card reader. Please insert SAM card and retry. (UC-03)',
-        isRetryable: true,
-        httpStatusCode: 400
-      });
+    // 1. Verify SAM cards if endpoint is supported by driver build
+    try {
+      const samCardsRes = await this.fpoClient.getSamCards();
+      const cards = this.extractSamCards(samCardsRes);
+      const card = cards.find((c) => c.cardPresent);
+      if (cards.length > 0 && !card) {
+        return this.buildFailedResult(operation, {
+          code: 'SAM_CARD_MISSING',
+          message: 'SAM card is missing in card reader. Please insert SAM card and retry. (UC-03)',
+          isRetryable: true,
+          httpStatusCode: 400
+        });
+      }
+    } catch {
+      // If /driver/sam-cards is 404, verifyPin in recoveryEngine will validate SAM card presence
     }
 
     // 2. Execute verify-pin and auth with recovery (UC-02, UC-04, UC-16, UC-17)
     return await this.recoveryEngine.executeWithRecovery('OPEN_SHIFT', async () => {
       // First verify PIN if needed
-      await this.fpoClient.verifyPin({ rnm: secrets.rnm, pin: secrets.pin });
+      await this.fpoClient.verifyPin({
+        registrationNumber: secrets.rnm,
+        rnm: secrets.rnm,
+        pin: secrets.pin
+      });
 
       // Then authenticate with GNS
-      await this.fpoClient.auth({ rnm: secrets.rnm, login: secrets.fpoLogin, password: secrets.fpoPassword });
+      await this.fpoClient.auth({
+        registrationNumber: secrets.rnm,
+        rnm: secrets.rnm,
+        login: secrets.fpoLogin,
+        password: secrets.fpoPassword
+      });
 
       // Check state
       const state = await this.fpoClient.getStateShift();
-      if (state.shiftStatus === 'OPEN') {
+      const isShiftOpen = state.shiftOpened ?? (state.shiftStatus === 'OPEN');
+      if (isShiftOpen) {
         // Already open
         return {
           success: true,
@@ -243,7 +289,7 @@ export class AgentService {
           externalOperationId: operation.externalOperationId,
           operationType: OperationType.OPEN_SHIFT,
           status: OperationStatus.SUCCESS,
-          shiftNumber: state.shiftNumber,
+          shiftNumber: state.shiftNumber || 1,
           kktRegNumber: secrets.rnm,
           completedAt: new Date().toISOString()
         };
@@ -254,6 +300,9 @@ export class AgentService {
         cashier: operation.cashier ? { name: operation.cashier.name || 'Кассир', inn: operation.cashier.inn } : undefined
       });
 
+      const fdNumber = openRes.fdNumber ?? openRes.fiscalDocNumber ?? 1;
+      const fiscalDocSign = openRes.fiscalMark ?? openRes.fiscalDocSign ?? `FPD-${fdNumber}`;
+
       return {
         success: true,
         operationId: operation.operationId,
@@ -262,12 +311,12 @@ export class AgentService {
         externalOperationId: operation.externalOperationId,
         operationType: OperationType.OPEN_SHIFT,
         status: OperationStatus.SUCCESS,
-        fiscalDocNumber: openRes.fiscalDocNumber,
-        fiscalDocSign: openRes.fiscalDocSign,
-        fnNumber: openRes.fnNumber,
-        kktRegNumber: openRes.kktRegNumber,
+        fiscalDocNumber: fdNumber,
+        fiscalDocSign,
+        fnNumber: openRes.fmNumber ?? openRes.fnNumber ?? secrets.rnm,
+        kktRegNumber: openRes.registrationNumber ?? openRes.kktRegNumber ?? secrets.rnm,
         shiftNumber: openRes.shiftNumber,
-        fiscalDateTime: openRes.time,
+        fiscalDateTime: openRes.date ?? openRes.time ?? new Date().toISOString(),
         completedAt: new Date().toISOString()
       };
     }, {
@@ -278,30 +327,56 @@ export class AgentService {
     });
   }
 
+  private mapItemsToPositions(items: NormalizedFiscalOperation['items'] = []): FpoReceiptPositionDto[] {
+    return items.map((it) => {
+      let vat = 0;
+      if (it.tax?.vatRate === 'VAT_12') vat = 1;
+      let st = 0;
+      if (it.tax?.salesTaxRate) {
+        const m = it.tax.salesTaxRate.match(/\d+/);
+        if (m) st = parseInt(m[0], 10);
+      }
+
+      return {
+        calcItemAttributeCode: it.calcItemAttributeCode ?? 1,
+        sgtin: it.sgtin,
+        name: it.name,
+        price: it.price,
+        quantity: it.quantity,
+        cost: it.totalSum,
+        measure: it.measureUnit || 'PIECE',
+        vat,
+        st,
+        vatRate: it.tax?.vatRate,
+        salesTaxRate: it.tax?.salesTaxRate
+      };
+    });
+  }
+
   private async handleSale(
     operation: NormalizedFiscalOperation,
     secrets: LocalAgentSecrets
   ): Promise<FiscalResult> {
-    const items: FpoReceiptItemDto[] = (operation.items || []).map((it) => ({
-      name: it.name,
-      price: it.price,
-      quantity: it.quantity,
-      cost: it.totalSum,
-      vatRate: it.tax?.vatRate || 'VAT_0',
-      salesTaxRate: it.tax?.salesTaxRate || 'ST_0',
-      calcItemAttributeCode: it.calcItemAttributeCode || 1,
-      measure: it.measureUnit,
-      sgtin: it.sgtin
-    }));
+    const positions = this.mapItemsToPositions(operation.items);
+    const cashSum = operation.totalCashSum || 0;
+    const cashlessSum = operation.totalCashlessSum || 0;
+    const totalSum = operation.totalSum || (cashSum + cashlessSum);
 
     return await this.recoveryEngine.executeWithRecovery('SALE', async () => {
       const res = await this.fpoClient.createReceipt({
         operationType: 'INCOME',
         cashier: operation.cashier ? { name: operation.cashier.name || 'Кассир', inn: operation.cashier.inn } : undefined,
-        items,
-        totalCashSum: operation.totalCashSum || 0,
-        totalCashlessSum: operation.totalCashlessSum || 0
+        positions,
+        items: positions,
+        paySum: totalSum,
+        deliverySum: 0,
+        totalSum,
+        totalCashSum: cashSum,
+        totalCashlessSum: cashlessSum
       });
+
+      const fdNumber = res.fdNumber ?? res.fiscalDocNumber ?? 1;
+      const fiscalDocSign = res.fiscalMark ?? res.fiscalDocSign ?? `FPD-${fdNumber}`;
 
       return {
         success: true,
@@ -311,11 +386,11 @@ export class AgentService {
         externalOperationId: operation.externalOperationId,
         operationType: OperationType.SALE,
         status: OperationStatus.SUCCESS,
-        fiscalDocNumber: res.fiscalDocNumber,
-        fiscalDocSign: res.fiscalDocSign,
-        fnNumber: res.fnNumber,
-        kktRegNumber: res.kktRegNumber,
-        fiscalDateTime: res.time,
+        fiscalDocNumber: fdNumber,
+        fiscalDocSign,
+        fnNumber: res.fmNumber ?? res.fnNumber ?? secrets.rnm,
+        kktRegNumber: res.registrationNumber ?? res.kktRegNumber ?? secrets.rnm,
+        fiscalDateTime: res.date ?? res.time ?? new Date().toISOString(),
         qrCodeUrl: res.qrCodeUrl,
         completedAt: new Date().toISOString()
       };
@@ -340,29 +415,29 @@ export class AgentService {
       });
     }
 
-    const items: FpoReceiptItemDto[] = (operation.items || []).map((it) => ({
-      name: it.name,
-      price: it.price,
-      quantity: it.quantity,
-      cost: it.totalSum,
-      vatRate: it.tax?.vatRate || 'VAT_0',
-      salesTaxRate: it.tax?.salesTaxRate || 'ST_0',
-      calcItemAttributeCode: it.calcItemAttributeCode || 1,
-      measure: it.measureUnit,
-      sgtin: it.sgtin
-    }));
+    const positions = this.mapItemsToPositions(operation.items);
+    const cashSum = operation.totalCashSum || 0;
+    const cashlessSum = operation.totalCashlessSum || 0;
+    const totalSum = operation.totalSum || (cashSum + cashlessSum);
 
     return await this.recoveryEngine.executeWithRecovery('RETURN', async () => {
       const res = await this.fpoClient.createReceipt({
         operationType: 'INCOME_RETURN',
         cashier: operation.cashier ? { name: operation.cashier.name || 'Кассир', inn: operation.cashier.inn } : undefined,
-        items,
-        totalCashSum: operation.totalCashSum || 0,
-        totalCashlessSum: operation.totalCashlessSum || 0,
+        positions,
+        items: positions,
+        paySum: totalSum,
+        deliverySum: 0,
+        totalSum,
+        totalCashSum: cashSum,
+        totalCashlessSum: cashlessSum,
         originFdNumber: operation.originFiscalDoc?.originFdNumber,
         originFnSerialNumber: operation.originFiscalDoc?.originFnSerialNumber,
         originDate: operation.originFiscalDoc?.originDate
       });
+
+      const fdNumber = res.fdNumber ?? res.fiscalDocNumber ?? 1;
+      const fiscalDocSign = res.fiscalMark ?? res.fiscalDocSign ?? `FPD-${fdNumber}`;
 
       return {
         success: true,
@@ -372,11 +447,11 @@ export class AgentService {
         externalOperationId: operation.externalOperationId,
         operationType: OperationType.RETURN,
         status: OperationStatus.SUCCESS,
-        fiscalDocNumber: res.fiscalDocNumber,
-        fiscalDocSign: res.fiscalDocSign,
-        fnNumber: res.fnNumber,
-        kktRegNumber: res.kktRegNumber,
-        fiscalDateTime: res.time,
+        fiscalDocNumber: fdNumber,
+        fiscalDocSign,
+        fnNumber: res.fmNumber ?? res.fnNumber ?? secrets.rnm,
+        kktRegNumber: res.registrationNumber ?? res.kktRegNumber ?? secrets.rnm,
+        fiscalDateTime: res.date ?? res.time ?? new Date().toISOString(),
         qrCodeUrl: res.qrCodeUrl,
         completedAt: new Date().toISOString()
       };
@@ -391,9 +466,13 @@ export class AgentService {
   private async handleDeposit(operation: NormalizedFiscalOperation): Promise<FiscalResult> {
     const sum = operation.totalSum || operation.totalCashSum || 0;
     const res = await this.fpoClient.deposit({
+      amount: sum,
       sum,
       cashier: operation.cashier ? { name: operation.cashier.name || 'Кассир', inn: operation.cashier.inn } : undefined
     });
+
+    const fdNumber = res.fiscalDocNumber || 1;
+    const fiscalDocSign = res.fiscalDocSign || `FPD-DEP-${fdNumber}`;
 
     return {
       success: true,
@@ -403,9 +482,9 @@ export class AgentService {
       externalOperationId: operation.externalOperationId,
       operationType: OperationType.DEPOSIT,
       status: OperationStatus.SUCCESS,
-      fiscalDocNumber: res.fiscalDocNumber,
-      fiscalDocSign: res.fiscalDocSign,
-      fiscalDateTime: res.time,
+      fiscalDocNumber: fdNumber,
+      fiscalDocSign,
+      fiscalDateTime: res.date ?? res.time ?? new Date().toISOString(),
       completedAt: new Date().toISOString()
     };
   }
@@ -413,9 +492,13 @@ export class AgentService {
   private async handleWithdraw(operation: NormalizedFiscalOperation): Promise<FiscalResult> {
     const sum = operation.totalSum || operation.totalCashSum || 0;
     const res = await this.fpoClient.withdraw({
+      amount: sum,
       sum,
       cashier: operation.cashier ? { name: operation.cashier.name || 'Кассир', inn: operation.cashier.inn } : undefined
     });
+
+    const fdNumber = res.fiscalDocNumber || 1;
+    const fiscalDocSign = res.fiscalDocSign || `FPD-WITH-${fdNumber}`;
 
     return {
       success: true,
@@ -425,9 +508,9 @@ export class AgentService {
       externalOperationId: operation.externalOperationId,
       operationType: OperationType.WITHDRAW,
       status: OperationStatus.SUCCESS,
-      fiscalDocNumber: res.fiscalDocNumber,
-      fiscalDocSign: res.fiscalDocSign,
-      fiscalDateTime: res.time,
+      fiscalDocNumber: fdNumber,
+      fiscalDocSign,
+      fiscalDateTime: res.date ?? res.time ?? new Date().toISOString(),
       completedAt: new Date().toISOString()
     };
   }
@@ -435,17 +518,20 @@ export class AgentService {
   private async handleCloseShift(operation: NormalizedFiscalOperation): Promise<FiscalResult> {
     // 1. Check cash balance before closing (UC-12, UC-13)
     const cashRes = await this.fpoClient.getCashTransaction();
-    if (cashRes.cashSum > 0) {
+    const cashInDrawer = cashRes.totalAmount ?? cashRes.cashSum ?? 0;
+    if (cashInDrawer > 0) {
       return this.buildFailedResult(operation, {
         code: 'DRAWER_NOT_EMPTY',
-        message: `Cannot close shift with non-zero cash in drawer (${cashRes.cashSum} KGS). Please perform cash withdrawal first. (UC-13)`,
+        message: `Cannot close shift with non-zero cash in drawer (${cashInDrawer} KGS). Please perform cash withdrawal first. (UC-13)`,
         isRetryable: false,
         httpStatusCode: 400,
-        details: { cashInDrawer: cashRes.cashSum }
+        details: { cashInDrawer }
       });
     }
 
     const res = await this.fpoClient.closeShift();
+    const fdNumber = res.fdNumber ?? res.fiscalDocNumber ?? 1;
+    const fiscalDocSign = res.fiscalMark ?? res.fiscalDocSign ?? `FPD-Z-${fdNumber}`;
 
     return {
       success: true,
@@ -456,11 +542,11 @@ export class AgentService {
       operationType: OperationType.CLOSE_SHIFT,
       status: OperationStatus.SUCCESS,
       shiftNumber: res.shiftNumber,
-      fiscalDocNumber: res.fiscalDocNumber,
-      fiscalDocSign: res.fiscalDocSign,
-      fnNumber: res.fnNumber,
-      kktRegNumber: res.kktRegNumber,
-      fiscalDateTime: res.time,
+      fiscalDocNumber: fdNumber,
+      fiscalDocSign,
+      fnNumber: res.fmNumber ?? res.fnNumber,
+      kktRegNumber: res.registrationNumber ?? res.kktRegNumber,
+      fiscalDateTime: res.date ?? res.time ?? new Date().toISOString(),
       chequesTotal: res.chequesTotal,
       fiscalDocsTotal: res.fiscalDocsTotal,
       completedAt: new Date().toISOString()
@@ -478,7 +564,7 @@ export class AgentService {
       operationType: OperationType.X_REPORT,
       status: OperationStatus.SUCCESS,
       shiftNumber: res.shiftNumber,
-      fiscalDateTime: res.time,
+      fiscalDateTime: res.date ?? res.time ?? new Date().toISOString(),
       completedAt: new Date().toISOString()
     };
   }

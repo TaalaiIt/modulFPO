@@ -10,7 +10,8 @@
     "test:integration": "jest test/integration --runInBand",
     "lint:architecture": "node scripts/lint-architecture.js",
     "start:gateway": "ts-node src/gateway/index.ts",
-    "start:agent": "ts-node src/agent/index.ts"
+    "start:agent": "ts-node src/agent/index.ts",
+    "pair:store": "ts-node scripts/pair-store.ts"
   },
   "keywords": [
     "smartdev",

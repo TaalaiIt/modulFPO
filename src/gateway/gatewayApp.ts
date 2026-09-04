@@ -84,6 +84,19 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
   // Health check
   fastify.get('/health', async () => ({ status: 'ok', time: new Date().toISOString() }));
 
+  // Detailed health check — shows agent connectivity and providers
+  fastify.get('/health/details', async () => {
+    const agents = orchestrator.routingService.getConnectedAgents?.() || [];
+    const providers = orchestrator.providerRegistry.getRegisteredCodes();
+    return {
+      status: 'ok',
+      time: new Date().toISOString(),
+      connectedAgents: agents,
+      registeredProviders: providers,
+      version: '1.0.0'
+    };
+  });
+
   // ==========================================
   // Vendor API 1.0 Routes (MoySklad lifecycle)
   // ==========================================
@@ -182,13 +195,32 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
     const url = req.url;
     const method = req.method;
 
-    const res = await orchestrator.handleFiscalRequest('MOYSKLAD', {
-      headers,
-      body,
-      rawBody: (req as FastifyRequest & { rawBody?: string }).rawBody,
-      url,
-      method
-    });
+    const accountId = headers['x-lognex-fiscal-account-id'] || 'unknown';
+    const timestamp = new Date().toISOString();
+    console.log(`\n📥 [${timestamp}] MOYSKLAD ${method} ${url}`);
+    console.log(`   Account-Id: ${accountId}`);
+    console.log(`   Body: ${JSON.stringify(body, null, 2).slice(0, 1500)}`);
+
+    let res;
+    try {
+      res = await orchestrator.handleFiscalRequest('MOYSKLAD', {
+        headers,
+        body,
+        rawBody: (req as FastifyRequest & { rawBody?: string }).rawBody,
+        url,
+        method
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`❌ [${new Date().toISOString()}] Unhandled error in MOYSKLAD ${method} ${url}: ${msg}`);
+      return reply.status(500).send({ errors: [{ code: 500, error: 'Internal server error', error_message: msg }] });
+    }
+
+    console.log(`📤 [${new Date().toISOString()}] Response ${res.statusCode} for ${method} ${url}`);
+    console.log(`   Body: ${JSON.stringify(res.body, null, 2).slice(0, 1000)}`);
+    if (!res.rawResult.success) {
+      console.error(`❌ Operation FAILED: ${JSON.stringify(res.rawResult.error)}`);
+    }
 
     if (res.headers) {
       for (const [k, v] of Object.entries(res.headers)) {
@@ -199,23 +231,30 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
   };
 
   fastify.put('/1/openshift', handleMoySkladFiscal);
+  fastify.put('/fiscal/1/openshift', handleMoySkladFiscal);
   fastify.put('/fiscal/1.0/openshift', handleMoySkladFiscal);
 
   fastify.post('/1/retaildemand', handleMoySkladFiscal);
+  fastify.post('/fiscal/1/retaildemand', handleMoySkladFiscal);
   fastify.post('/fiscal/1.0/retaildemand', handleMoySkladFiscal);
 
   fastify.post('/1/retaisalesreturn', handleMoySkladFiscal);
   fastify.post('/1/retailsalesreturn', handleMoySkladFiscal);
+  fastify.post('/fiscal/1/retaisalesreturn', handleMoySkladFiscal);
+  fastify.post('/fiscal/1/retailsalesreturn', handleMoySkladFiscal);
   fastify.post('/fiscal/1.0/retaisalesreturn', handleMoySkladFiscal);
   fastify.post('/fiscal/1.0/retailsalesreturn', handleMoySkladFiscal);
 
   fastify.post('/1/retaildrawercashin', handleMoySkladFiscal);
+  fastify.post('/fiscal/1/retaildrawercashin', handleMoySkladFiscal);
   fastify.post('/fiscal/1.0/retaildrawercashin', handleMoySkladFiscal);
 
   fastify.post('/1/retaildrawercashout', handleMoySkladFiscal);
+  fastify.post('/fiscal/1/retaildrawercashout', handleMoySkladFiscal);
   fastify.post('/fiscal/1.0/retaildrawercashout', handleMoySkladFiscal);
 
   fastify.put('/1/closeshift', handleMoySkladFiscal);
+  fastify.put('/fiscal/1/closeshift', handleMoySkladFiscal);
   fastify.put('/fiscal/1.0/closeshift', handleMoySkladFiscal);
 
   // ==========================================

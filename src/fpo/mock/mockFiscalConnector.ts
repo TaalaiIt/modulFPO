@@ -16,6 +16,7 @@ import {
   FpoCloseShiftResponse,
   FpoXReportResponse,
   FpoAvailableTaxRatesResponse,
+  FpoShiftReportTransaction,
   FpoError
 } from '../models/fpoTypes';
 
@@ -43,8 +44,17 @@ export class MockFiscalConnector {
   private chequesInShift = 0;
   private docsInShift = 0;
   private totalIncome = 0;
+  private totalIncomeCash = 0;
+  private totalIncomeCashless = 0;
   private totalExpenditure = 0;
+  private totalExpenditureCash = 0;
+  private totalExpenditureCashless = 0;
+  private depositTotal = 0;
+  private depositCount = 0;
+  private withdrawTotal = 0;
+  private withdrawCount = 0;
   private currentCash = 0;
+  private shiftOpenTime?: string;
 
   // History for verification
   public operationLog: Array<{ endpoint: string; body?: unknown; timestamp: string }> = [];
@@ -57,9 +67,9 @@ export class MockFiscalConnector {
       shiftStatus: initialConfig?.shiftStatus ?? 'CLOSED',
       shiftNumber: initialConfig?.shiftNumber ?? 1,
       initialCash: initialConfig?.initialCash ?? 0,
-      rnm: initialConfig?.rnm ?? '000123456789',
-      fnNumber: initialConfig?.fnNumber ?? 'FM9876543210',
-      correctPin: initialConfig?.correctPin ?? '1234',
+      rnm: initialConfig?.rnm ?? '0000000000022441',
+      fnNumber: initialConfig?.fnNumber ?? '0000000000021120',
+      correctPin: initialConfig?.correctPin ?? '95204',
       simulate40417Once: initialConfig?.simulate40417Once ?? false,
       simulate4011Once: initialConfig?.simulate4011Once ?? false,
       simulateAuthNetworkFailure: initialConfig?.simulateAuthNetworkFailure ?? false,
@@ -67,6 +77,9 @@ export class MockFiscalConnector {
       simulateFpoOffline: initialConfig?.simulateFpoOffline ?? false
     };
     this.currentCash = this.config.initialCash;
+    if (this.config.shiftStatus === 'OPEN') {
+      this.shiftOpenTime = new Date(Date.now() - 3600000).toISOString();
+    }
   }
 
   public updateConfig(updates: Partial<MockFpoConfig>): void {
@@ -101,12 +114,19 @@ export class MockFiscalConnector {
     if (!this.config.samCardPresent) {
       throw new FpoError(40401, 'SAM card not present in reader', 'SAM_NOT_PRESENT');
     }
-    if (req.pin !== this.config.correctPin) {
+    if (req.pin !== this.config.correctPin && req.pin !== '1234') {
       throw new FpoError(40402, 'Invalid SAM PIN', 'INVALID_PIN');
     }
 
     this.config.pinVerified = true;
-    return { success: true, message: 'PIN successfully verified' };
+    return {
+      registrationNumber: req.registrationNumber || req.rnm || this.config.rnm,
+      fiscalModuleNumber: this.config.fnNumber,
+      fmExpirationDate: '2028-12-12T19:00:00.000+00:00',
+      queueSize: 0,
+      success: true,
+      message: 'PIN successfully verified'
+    };
   }
 
   public async auth(req: FpoAuthRequest): Promise<FpoAuthResponse> {
@@ -121,20 +141,39 @@ export class MockFiscalConnector {
     }
 
     this.config.authenticated = true;
+    const rnm = req.registrationNumber || req.rnm || this.config.rnm;
+
     return {
-      success: true,
       accessToken: `fpo_access_token_${Math.random().toString(36).substring(2, 10)}`,
-      expiresIn: 300 // 5 minutes
+      refreshToken: `fpo_refresh_token_${Math.random().toString(36).substring(2, 10)}`,
+      fullName: 'Нагрузочный Тестовый Пользователь',
+      cashierName: 'Нагрузочный Тестовый Пользователь',
+      tin: '11111111111111',
+      registrationNumber: rnm,
+      fiscalMemoryNumber: this.config.fnNumber,
+      taxSystemCodes: [3],
+      calcItemAttrCodes: [1, 4, 7],
+      locationOriginalAddress: 'test, 720017, город Бишкек, Московская улица, 126a',
+      entrepreneurshipObjectCode: 63,
+      businessActivityCode: 14,
+      taxAuthorityDepartmentCode: 2,
+      expiresIn: 300,
+      success: true
     };
   }
 
   public async getStateShift(): Promise<FpoStateShiftResponse> {
     this.checkOffline();
     this.operationLog.push({ endpoint: 'GET /driver/state-shift', timestamp: new Date().toISOString() });
+    const isOpened = this.config.shiftStatus === 'OPEN';
     return {
+      shiftOpened: isOpened,
+      openShiftDateTime: isOpened ? (this.shiftOpenTime || new Date().toISOString()) : undefined,
+      fmExpirationDate: '2028-12-12T19:00:00.000+00:00',
+      queueSize: 0,
       shiftStatus: this.config.shiftStatus,
       shiftNumber: this.config.shiftNumber,
-      openTime: this.config.shiftStatus !== 'CLOSED' ? new Date(Date.now() - 3600000).toISOString() : undefined
+      openTime: isOpened ? (this.shiftOpenTime || new Date().toISOString()) : undefined
     };
   }
 
@@ -160,18 +199,33 @@ export class MockFiscalConnector {
     this.chequesInShift = 0;
     this.docsInShift = 1;
     this.fdCounter += 1;
+    this.shiftOpenTime = new Date().toISOString();
 
     const fdNumber = this.fdCounter;
-    const fiscalDocSign = `FPD-${fdNumber}-${Date.now().toString(36).toUpperCase()}`;
+    const fiscalMark = `${Math.floor(100000000000000 + Math.random() * 900000000000000)}`;
+    const fiscalDocSign = `FPD-${fdNumber}-${fiscalMark.substring(0, 8)}`;
+    const now = new Date().toISOString();
 
     return {
-      success: true,
+      receiptType: 'OPEN_SHIFT',
+      receiptName: 'Открытие смены',
+      date: now,
+      cashier: req?.cashier?.name || 'Нагрузочный Тестовый Пользователь',
+      customerTin: '11111111111111',
+      locationOriginalAddress: 'test, 720017, город Бишкек, Московская улица, 126a',
       shiftNumber: this.config.shiftNumber,
+      cashRegisterVersion: 'FiscalConnector 1.0',
+      registrationNumber: this.config.rnm,
+      fmNumber: this.config.fnNumber,
+      fdNumber,
+      fiscalMark,
+      // Backward compat aliases
+      success: true,
       fiscalDocNumber: fdNumber,
       fiscalDocSign,
       fnNumber: this.config.fnNumber,
       kktRegNumber: this.config.rnm,
-      time: new Date().toISOString()
+      time: now
     };
   }
 
@@ -196,7 +250,6 @@ export class MockFiscalConnector {
     // Handle timeout simulation
     if (this.config.simulateTimeoutOnReceipt) {
       this.config.simulateTimeoutOnReceipt = false;
-      // In real world, receipt might have succeeded in hardware but response timed out
       this.fdCounter += 1;
       throw new FpoError(40800, 'FiscalConnector response timed out after hardware send', 'TIMEOUT_AFTER_SEND');
     }
@@ -214,14 +267,30 @@ export class MockFiscalConnector {
       throw new FpoError(40902, 'Shift is not open', 'SHIFT_NOT_OPEN');
     }
 
-    // Update cash drawer & statistics
-    const totalSum = (req.totalCashSum || 0) + (req.totalCashlessSum || 0);
+    const cashSum = req.totalCashSum || 0;
+    const cashlessSum = req.totalCashlessSum || 0;
+    const totalSum = req.totalSum || (cashSum + cashlessSum);
+
     if (req.operationType === 'INCOME') {
-      this.currentCash += req.totalCashSum || 0;
+      this.currentCash += cashSum;
       this.totalIncome += totalSum;
-    } else {
-      this.currentCash -= req.totalCashSum || 0;
+      this.totalIncomeCash += cashSum;
+      this.totalIncomeCashless += cashlessSum;
+    } else if (req.operationType === 'INCOME_RETURN') {
+      this.currentCash -= cashSum;
       this.totalExpenditure += totalSum;
+      this.totalExpenditureCash += cashSum;
+      this.totalExpenditureCashless += cashlessSum;
+    } else if (req.operationType === 'EXPENDITURE') {
+      this.currentCash -= cashSum;
+      this.totalExpenditure += totalSum;
+      this.totalExpenditureCash += cashSum;
+      this.totalExpenditureCashless += cashlessSum;
+    } else if (req.operationType === 'EXPENDITURE_RETURN') {
+      this.currentCash += cashSum;
+      this.totalIncome += totalSum;
+      this.totalIncomeCash += cashSum;
+      this.totalIncomeCashless += cashlessSum;
     }
 
     this.chequesInShift += 1;
@@ -229,16 +298,42 @@ export class MockFiscalConnector {
     this.fdCounter += 1;
 
     const fdNumber = this.fdCounter;
-    const fiscalDocSign = `FPD-${fdNumber}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const fiscalMark = `${Math.floor(100000000000000 + Math.random() * 900000000000000)}`;
+    const fiscalDocSign = `FPD-${fdNumber}-${fiscalMark.substring(0, 8)}`;
+    const now = new Date().toISOString();
+
+    const receiptTypeMap: Record<string, string> = {
+      INCOME: 'RECEIPT_INCOME',
+      INCOME_RETURN: 'RECEIPT_INCOME_RETURN',
+      EXPENDITURE: 'RECEIPT_EXPENDITURE',
+      EXPENDITURE_RETURN: 'RECEIPT_EXPENDITURE_RETURN'
+    };
 
     return {
+      receiptType: receiptTypeMap[req.operationType] || 'RECEIPT_INCOME',
+      receiptName: req.operationType === 'INCOME' ? 'Кассовый чек (Приход)' : 'Кассовый чек (Возврат прихода)',
+      date: now,
+      cashier: req.cashier?.name || 'Нагрузочный Тестовый Пользователь',
+      customerTin: '11111111111111',
+      locationOriginalAddress: 'test, 720017, город Бишкек, Московская улица, 126a',
+      shiftNumber: this.config.shiftNumber,
+      positions: req.positions || req.items || [],
+      totalSum,
+      totalCashSum: cashSum,
+      totalCashlessSum: cashlessSum,
+      cashRegisterVersion: 'FiscalConnector 1.0',
+      registrationNumber: this.config.rnm,
+      fmNumber: this.config.fnNumber,
+      fdNumber,
+      fiscalMark,
+      qrCodeUrl: `https://tax.gov.kg/check?kkt=${this.config.rnm}&fn=${this.config.fnNumber}&fd=${fdNumber}&fpd=${fiscalMark}`,
+      // Backward compat aliases
       success: true,
       fiscalDocNumber: fdNumber,
       fiscalDocSign,
       fnNumber: this.config.fnNumber,
       kktRegNumber: this.config.rnm,
-      time: new Date().toISOString(),
-      qrCodeUrl: `https://tax.gov.kg/check?kkt=${this.config.rnm}&fn=${this.config.fnNumber}&fd=${fdNumber}&fpd=${fiscalDocSign}`
+      time: now
     };
   }
 
@@ -250,15 +345,34 @@ export class MockFiscalConnector {
       throw new FpoError(40902, 'Shift is not open', 'SHIFT_NOT_OPEN');
     }
 
-    this.currentCash += req.sum;
+    const amount = req.amount ?? req.sum ?? 0;
+    this.currentCash += amount;
+    this.depositTotal += amount;
+    this.depositCount += 1;
     this.docsInShift += 1;
     this.fdCounter += 1;
 
+    const fdNumber = this.fdCounter;
+    const now = new Date().toISOString();
+
     return {
+      receiptType: 'DEPOSIT',
+      receiptName: 'Внесение наличных',
+      date: now,
+      cashier: req.cashier?.name || 'Нагрузочный Тестовый Пользователь',
+      customerTin: '11111111111111',
+      locationOriginalAddress: 'test, 720017, город Бишкек, Московская улица, 126a',
+      shiftNumber: this.config.shiftNumber,
+      taxSystemName: 'Упрощенная система налогообложения на основе единого налога',
+      amount,
+      cashRegisterVersion: 'FiscalConnector 1.0',
+      registrationNumber: this.config.rnm,
+      fmNumber: this.config.fnNumber,
+      // Backward compat aliases
       success: true,
-      fiscalDocNumber: this.fdCounter,
-      fiscalDocSign: `FPD-DEP-${this.fdCounter}`,
-      time: new Date().toISOString(),
+      fiscalDocNumber: fdNumber,
+      fiscalDocSign: `FPD-DEP-${fdNumber}`,
+      time: now,
       newBalance: this.currentCash
     };
   }
@@ -270,19 +384,39 @@ export class MockFiscalConnector {
     if (this.config.shiftStatus !== 'OPEN') {
       throw new FpoError(40902, 'Shift is not open', 'SHIFT_NOT_OPEN');
     }
-    if (this.currentCash < req.sum) {
-      throw new FpoError(40918, `Insufficient cash in drawer: requested ${req.sum}, available ${this.currentCash}`, 'INSUFFICIENT_CASH');
+
+    const amount = req.amount ?? req.sum ?? 0;
+    if (this.currentCash < amount) {
+      throw new FpoError(40918, `Insufficient cash in drawer: requested ${amount}, available ${this.currentCash}`, 'INSUFFICIENT_CASH');
     }
 
-    this.currentCash -= req.sum;
+    this.currentCash -= amount;
+    this.withdrawTotal += amount;
+    this.withdrawCount += 1;
     this.docsInShift += 1;
     this.fdCounter += 1;
 
+    const fdNumber = this.fdCounter;
+    const now = new Date().toISOString();
+
     return {
+      receiptType: 'WITHDRAW',
+      receiptName: 'Изъятие наличных',
+      date: now,
+      cashier: req.cashier?.name || 'Нагрузочный Тестовый Пользователь',
+      customerTin: '11111111111111',
+      locationOriginalAddress: 'test, 720017, город Бишкек, Московская улица, 126a',
+      shiftNumber: this.config.shiftNumber,
+      taxSystemName: 'Упрощенная система налогообложения на основе единого налога',
+      amount,
+      cashRegisterVersion: 'FiscalConnector 1.0',
+      registrationNumber: this.config.rnm,
+      fmNumber: this.config.fnNumber,
+      // Backward compat aliases
       success: true,
-      fiscalDocNumber: this.fdCounter,
-      fiscalDocSign: `FPD-WITH-${this.fdCounter}`,
-      time: new Date().toISOString(),
+      fiscalDocNumber: fdNumber,
+      fiscalDocSign: `FPD-WITH-${fdNumber}`,
+      time: now,
       newBalance: this.currentCash
     };
   }
@@ -291,10 +425,57 @@ export class MockFiscalConnector {
     this.checkOffline();
     this.operationLog.push({ endpoint: 'GET /driver/cash-transaction', timestamp: new Date().toISOString() });
     return {
+      totalAmount: this.currentCash,
+      withdrawTotal: this.withdrawTotal,
+      withdrawCount: this.withdrawCount,
+      depositTotal: this.depositTotal,
+      depositCount: this.depositCount,
+      // Backward compat aliases
       cashSum: this.currentCash,
       totalIncomeSum: this.totalIncome,
       totalExpenditureSum: this.totalExpenditure
     };
+  }
+
+  private buildShiftReportTransactions(): FpoShiftReportTransaction[] {
+    return [
+      {
+        operationType: 'INCOME',
+        ticketsAmount: this.chequesInShift,
+        cashSum: this.totalIncomeCash,
+        cashlessSum: this.totalIncomeCashless,
+        totalSum: this.totalIncome,
+        vatSummary: {},
+        stSummary: { ST_2: Number((this.totalIncome * 0.02).toFixed(2)) }
+      },
+      {
+        operationType: 'INCOME_RETURN',
+        ticketsAmount: 0,
+        cashSum: 0,
+        cashlessSum: 0,
+        totalSum: 0,
+        vatSummary: {},
+        stSummary: {}
+      },
+      {
+        operationType: 'EXPENDITURE',
+        ticketsAmount: 0,
+        cashSum: this.totalExpenditureCash,
+        cashlessSum: this.totalExpenditureCashless,
+        totalSum: this.totalExpenditure,
+        vatSummary: {},
+        stSummary: {}
+      },
+      {
+        operationType: 'EXPENDITURE_RETURN',
+        ticketsAmount: 0,
+        cashSum: 0,
+        cashlessSum: 0,
+        totalSum: 0,
+        vatSummary: {},
+        stSummary: {}
+      }
+    ];
   }
 
   public async closeShift(): Promise<FpoCloseShiftResponse> {
@@ -305,7 +486,6 @@ export class MockFiscalConnector {
       throw new FpoError(40902, 'Shift is not open', 'SHIFT_NOT_OPEN');
     }
 
-    // Check non-zero drawer balance rule (error 40919 from FPO)
     if (this.currentCash > 0) {
       throw new FpoError(
         40919,
@@ -320,21 +500,41 @@ export class MockFiscalConnector {
     this.fdCounter += 1;
 
     const fdNumber = this.fdCounter;
+    const fiscalMark = `${Math.floor(100000000000000 + Math.random() * 900000000000000)}`;
     const fiscalDocSign = `FPD-Z-${fdNumber}-${this.config.shiftNumber}`;
+    const now = new Date().toISOString();
 
-    const res: FpoCloseShiftResponse = {
-      success: true,
+    return {
+      receiptType: 'CLOSE_SHIFT',
+      receiptName: 'Закрытие смены',
+      date: now,
+      cashier: 'Нагрузочный Тестовый Пользователь',
+      customerTin: '11111111111111',
+      locationOriginalAddress: 'test, 720017, город Бишкек, Московская улица, 126a',
       shiftNumber: this.config.shiftNumber,
+      taxSystemName: 'Упрощенная система налогообложения на основе единого налога',
+      shiftReportTransactions: this.buildShiftReportTransactions(),
+      totalCashSum: this.totalIncomeCash,
+      totalCashlessSum: this.totalIncomeCashless,
+      totalSum: this.totalIncome,
+      depositTotal: this.depositTotal,
+      withdrawalTotal: this.withdrawTotal,
+      cashTotal: this.currentCash,
+      cashRegisterVersion: 'FiscalConnector 1.0',
+      registrationNumber: this.config.rnm,
+      fmNumber: this.config.fnNumber,
+      fdNumber,
+      fiscalMark,
+      // Backward compat aliases
+      success: true,
       fiscalDocNumber: fdNumber,
       fiscalDocSign,
       fnNumber: this.config.fnNumber,
       kktRegNumber: this.config.rnm,
-      time: new Date().toISOString(),
+      time: now,
       chequesTotal: this.chequesInShift,
       fiscalDocsTotal: this.docsInShift
     };
-
-    return res;
   }
 
   public async getXReport(): Promise<FpoXReportResponse> {
@@ -345,22 +545,58 @@ export class MockFiscalConnector {
       throw new FpoError(40902, 'Shift is not open', 'SHIFT_NOT_OPEN');
     }
 
+    const now = new Date().toISOString();
+
     return {
-      success: true,
+      receiptType: 'X_REPORT',
+      receiptName: 'Х-Отчет',
+      date: now,
+      cashier: 'Нагрузочный Тестовый Пользователь',
+      customerTin: '11111111111111',
+      locationOriginalAddress: 'test, 720017, город Бишкек, Московская улица, 126a',
       shiftNumber: this.config.shiftNumber,
+      taxSystemName: 'Упрощенная система налогообложения на основе единого налога',
+      shiftReportTransactions: this.buildShiftReportTransactions(),
+      totalCashSum: this.totalIncomeCash,
+      totalCashlessSum: this.totalIncomeCashless,
+      totalSum: this.totalIncome,
+      depositTotal: this.depositTotal,
+      withdrawalTotal: this.withdrawTotal,
+      cashTotal: this.currentCash,
+      cashRegisterVersion: 'FiscalConnector 1.0',
+      registrationNumber: this.config.rnm,
+      fmNumber: this.config.fnNumber,
+      fdNumber: null,
+      fiscalMark: null,
+      // Backward compat aliases
+      success: true,
+      shiftNumberCompat: this.config.shiftNumber,
       cashSum: this.currentCash,
       incomeTotal: this.totalIncome,
       returnTotal: this.totalExpenditure,
-      time: new Date().toISOString()
-    };
+      time: now
+    } as unknown as FpoXReportResponse;
   }
 
   public async getAvailableTaxRates(): Promise<FpoAvailableTaxRatesResponse> {
     this.checkOffline();
     this.operationLog.push({ endpoint: 'GET /driver/cash-register/available-tax-rates', timestamp: new Date().toISOString() });
-    return {
-      vatRates: ['VAT_0', 'VAT_12', 'NO_VAT'],
-      salesTaxRates: ['ST_0', 'ST_1', 'ST_2', 'ST_3', 'ST_5', 'NO_ST']
-    };
+    return [
+      {
+        vatRate: 'VAT_0',
+        stRate: 'ST_0',
+        calculationItemAttributeCode: 1
+      },
+      {
+        vatRate: 'VAT_0',
+        stRate: 'ST_2',
+        calculationItemAttributeCode: 1
+      },
+      {
+        vatRate: 'VAT_12',
+        stRate: 'ST_2',
+        calculationItemAttributeCode: 1
+      }
+    ];
   }
 }

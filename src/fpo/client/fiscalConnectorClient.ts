@@ -9,6 +9,7 @@ import {
   FpoOpenShiftResponse,
   FpoReceiptRequest,
   FpoReceiptResponse,
+  FpoReceiptPositionDto,
   FpoDepositRequest,
   FpoWithdrawRequest,
   FpoCashTransactionResponse,
@@ -39,6 +40,7 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
   private token?: string;
   private timeoutMs: number;
   private registrationNumber?: string;
+  private responseType: 'json' | 'pdf' = 'json';
   private receiptWidthMm: 56 | 80 = 80;
 
   constructor(baseUrl = 'http://localhost:8080', timeoutMs = 15000) {
@@ -50,24 +52,38 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
     this.token = token;
   }
 
-  public configure(options: { registrationNumber?: string; receiptWidthMm?: 56 | 80 }): void {
-    this.registrationNumber = options.registrationNumber;
+  public configure(options: { registrationNumber?: string; receiptWidthMm?: 56 | 80; responseType?: 'json' | 'pdf' }): void {
+    if (options.registrationNumber) this.registrationNumber = options.registrationNumber;
     if (options.receiptWidthMm) this.receiptWidthMm = options.receiptWidthMm;
+    if (options.responseType) this.responseType = options.responseType;
   }
 
-  private async request<T>(endpoint: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+  private async request<T>(
+    endpoint: string,
+    options: {
+      method?: string;
+      body?: unknown;
+      headers?: Record<string, string>;
+      overrideRnm?: string;
+    } = {}
+  ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'Response-Type': 'JSON',
-      'WIDTH-RECEIPT': String(this.receiptWidthMm)
+      'Response-Type': this.responseType,
+      'WIDTH-RECEIPT': String(this.receiptWidthMm),
+      ...(options.headers || {})
     };
 
     if (this.token) {
       headers['Authorization'] = this.token;
     }
-    if (this.registrationNumber) headers['Registration-Number'] = this.registrationNumber;
+
+    const rnm = options.overrideRnm || this.registrationNumber;
+    if (rnm) {
+      headers['Registration-Number'] = rnm;
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -76,7 +92,7 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
       const response = await fetch(url, {
         method: options.method || (options.body ? 'POST' : 'GET'),
         headers,
-        body: options.body ? JSON.stringify(options.body) : undefined,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal: controller.signal
       });
 
@@ -107,11 +123,31 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
   }
 
   async verifyPin(req: FpoVerifyPinRequest): Promise<FpoVerifyPinResponse> {
-    return this.request<FpoVerifyPinResponse>('/driver/verify-pin', { body: req });
+    const rnm = req.registrationNumber || req.rnm || this.registrationNumber || '';
+    const body = {
+      registrationNumber: rnm,
+      pin: req.pin
+    };
+    return this.request<FpoVerifyPinResponse>('/driver/verify-pin', {
+      method: 'POST',
+      body,
+      overrideRnm: rnm
+    });
   }
 
   async auth(req: FpoAuthRequest): Promise<FpoAuthResponse> {
-    const res = await this.request<FpoAuthResponse>('/driver/auth', { body: req });
+    const rnm = req.registrationNumber || req.rnm || this.registrationNumber;
+    const body: Record<string, unknown> = {
+      login: req.login || '',
+      password: req.password || ''
+    };
+
+    const res = await this.request<FpoAuthResponse>('/driver/auth', {
+      method: 'POST',
+      body,
+      overrideRnm: rnm
+    });
+
     if (res.accessToken) {
       this.setToken(res.accessToken);
     }
@@ -123,19 +159,84 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
   }
 
   async openShift(req?: FpoOpenShiftRequest): Promise<FpoOpenShiftResponse> {
-    return this.request<FpoOpenShiftResponse>('/driver/open-shift', { body: req || {} });
+    return this.request<FpoOpenShiftResponse>('/driver/open-shift', {
+      method: 'POST',
+      body: req || {}
+    });
   }
 
   async createReceipt(req: FpoReceiptRequest): Promise<FpoReceiptResponse> {
-    return this.request<FpoReceiptResponse>('/driver/cash-register/receipt', { body: req });
+    const rawPositions = req.positions || req.items || [];
+    const positions: FpoReceiptPositionDto[] = rawPositions.map((p) => {
+      // Map vat/st from string or number if needed
+      let vat = p.vat;
+      if (vat === undefined && p.vatRate) {
+        vat = p.vatRate === 'VAT_12' ? 1 : 0;
+      }
+      let st = p.st;
+      if (st === undefined && p.salesTaxRate) {
+        const match = p.salesTaxRate.match(/\d+/);
+        st = match ? parseInt(match[0], 10) : 0;
+      }
+
+      return {
+        calcItemAttributeCode: p.calcItemAttributeCode ?? 0,
+        sgtin: p.sgtin,
+        name: p.name,
+        price: Number(p.price.toFixed(2)),
+        quantity: Number(p.quantity.toFixed(4)),
+        cost: Number(p.cost.toFixed(2)),
+        measure: p.measure || 'PIECE',
+        vat: (vat ?? 0),
+        st: (st ?? 0)
+      };
+    });
+
+    const cashSum = req.totalCashSum ?? 0;
+    const cashlessSum = req.totalCashlessSum ?? 0;
+    const totalSum = Number((req.totalSum ?? (cashSum + cashlessSum)).toFixed(2));
+    const paySum = Number((req.paySum ?? (cashSum + cashlessSum)).toFixed(2));
+    const deliverySum = Number((req.deliverySum ?? 0).toFixed(2));
+    const totalCashSum = Number(cashSum.toFixed(2));
+    const totalCashlessSum = Number(cashlessSum.toFixed(2));
+
+    const payload: Record<string, unknown> = {
+      positions,
+      operationType: req.operationType,
+      paySum,
+      deliverySum,
+      totalSum,
+      totalCashSum,
+      totalCashlessSum
+    };
+
+    if (req.originFdNumber !== undefined) {
+      payload.originFdNumber = req.originFdNumber;
+    }
+    if (req.originFnSerialNumber !== undefined) {
+      payload.originFnSerialNumber = req.originFnSerialNumber;
+    }
+
+    return this.request<FpoReceiptResponse>('/driver/cash-register/receipt', {
+      method: 'POST',
+      body: payload
+    });
   }
 
   async deposit(req: FpoDepositRequest): Promise<FpoCashTransactionResult> {
-    return this.request<FpoCashTransactionResult>('/driver/cash-transaction/deposit', { body: req });
+    const amount = Number((req.amount ?? req.sum ?? 0).toFixed(2));
+    return this.request<FpoCashTransactionResult>('/driver/cash-transaction/deposit', {
+      method: 'POST',
+      body: { amount }
+    });
   }
 
   async withdraw(req: FpoWithdrawRequest): Promise<FpoCashTransactionResult> {
-    return this.request<FpoCashTransactionResult>('/driver/cash-transaction/withdraw', { body: req });
+    const amount = Number((req.amount ?? req.sum ?? 0).toFixed(2));
+    return this.request<FpoCashTransactionResult>('/driver/cash-transaction/withdraw', {
+      method: 'POST',
+      body: { amount }
+    });
   }
 
   async getCashTransaction(): Promise<FpoCashTransactionResponse> {
@@ -143,7 +244,10 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
   }
 
   async closeShift(): Promise<FpoCloseShiftResponse> {
-    return this.request<FpoCloseShiftResponse>('/driver/close-shift', { body: {} });
+    return this.request<FpoCloseShiftResponse>('/driver/close-shift', {
+      method: 'POST',
+      body: {}
+    });
   }
 
   async getXReport(): Promise<FpoXReportResponse> {

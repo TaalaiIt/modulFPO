@@ -55,6 +55,12 @@ export class RoutingService {
     return !!transport && transport.isOnline();
   }
 
+  public getConnectedAgents(): string[] {
+    return Array.from(this.agentTransports.entries())
+      .filter(([, transport]) => transport.isOnline())
+      .map(([agentId]) => agentId);
+  }
+
   public clear(): void {
     this.storeBindings.clear();
     this.agentTransports.clear();
