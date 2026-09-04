@@ -12,7 +12,7 @@
     <endpointBase>https://esepmoysclad.smartdev.kg</endpointBase>
   </vendorApi>
 
-  <!-- Fiscal API requests are sent to /fiscal/1.0/{operation}. -->
+  <!-- Fiscal API requests are sent to /fiscal/1/{operation}. -->
   <fiscalApi>
     <endpointBase>https://esepmoysclad.smartdev.kg/fiscal</endpointBase>
     <operationTypes>

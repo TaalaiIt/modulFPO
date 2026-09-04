@@ -176,7 +176,12 @@ export class HttpFiscalConnectorClient implements IFiscalConnectorClient {
       let st = p.st;
       if (st === undefined && p.salesTaxRate) {
         const match = p.salesTaxRate.match(/\d+/);
-        st = match ? parseInt(match[0], 10) : 0;
+        if (match) {
+          const salesTaxValue = parseInt(match[0], 10);
+          st = salesTaxValue === 5 ? 4 : salesTaxValue;
+        } else {
+          st = 0;
+        }
       }
 
       return {

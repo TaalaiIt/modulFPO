@@ -8,7 +8,13 @@ import {
   FiscalResult,
   ReceiptData
 } from '../../core/operations/types';
-import { MoySkladInstallationStore, MoySkladSecurity } from './security/moySkladSecurity';
+import {
+  EncryptedFileMoySkladFiscalResultStore,
+  InMemoryMoySkladFiscalResultStore,
+  MoySkladFiscalResultStore,
+  MoySkladInstallationStore,
+  MoySkladSecurity
+} from './security/moySkladSecurity';
 import { MoySkladLifecycle } from './lifecycle/moySkladLifecycle';
 import { MoySkladMapper } from './mapper/moySkladMapper';
 import { MoySkladReceiptGenerator } from './receipt/moySkladReceiptGenerator';
@@ -27,13 +33,19 @@ export class MoySkladProviderAdapter implements IProviderAdapter {
   public readonly fiscalDescriptor = MOYSKLAD_FISCAL_DESCRIPTOR;
   private readonly vendorSecurity: MoySkladVendorSecurity;
   private fiscalResults = new Map<string, FiscalResult>();
+  private readonly fiscalResultStore: MoySkladFiscalResultStore;
 
-  constructor(auditLogger?: AuditLogger, installationStore?: MoySkladInstallationStore) {
+  constructor(
+    auditLogger?: AuditLogger,
+    installationStore?: MoySkladInstallationStore,
+    fiscalResultStore?: MoySkladFiscalResultStore
+  ) {
     this.security = new MoySkladSecurity(installationStore);
     this.vendorSecurity = new MoySkladVendorSecurity(process.env.MOYSKLAD_VENDOR_JWT_SECRET);
     this.lifecycle = new MoySkladLifecycle(this.security, auditLogger);
     this.mapper = new MoySkladMapper();
     this.receiptGenerator = new MoySkladReceiptGenerator();
+    this.fiscalResultStore = fiscalResultStore || new InMemoryMoySkladFiscalResultStore();
   }
 
   public async verifyRequest(request: {
@@ -103,7 +115,10 @@ export class MoySkladProviderAdapter implements IProviderAdapter {
       const demandMeta = demand?.meta as Record<string, unknown> | undefined;
       const originId = demandMeta?.id as string | undefined;
       const accountId = (rawRequest.headers['x-lognex-fiscal-account-id'] as string) || (body.accountId as string);
-      const storedResult = originId && accountId ? this.fiscalResults.get(`${accountId}:${originId}`) : undefined;
+      const resultKey = originId && accountId ? `${accountId}:${originId}` : undefined;
+      const storedResult = resultKey
+        ? this.fiscalResults.get(resultKey) || this.fiscalResultStore.get(resultKey)
+        : undefined;
       if (storedResult) {
         body.originFdNumber = storedResult.fiscalDocNumber;
         body.originFnSerialNumber = storedResult.fnNumber;
@@ -115,7 +130,9 @@ export class MoySkladProviderAdapter implements IProviderAdapter {
 
   public recordFiscalResult(operation: NormalizedFiscalOperation, result: FiscalResult): void {
     if (operation.operationType === 'SALE' && result.success) {
-      this.fiscalResults.set(`${operation.providerAccountId}:${operation.externalOperationId}`, result);
+      const key = `${operation.providerAccountId}:${operation.externalOperationId}`;
+      this.fiscalResults.set(key, result);
+      this.fiscalResultStore.set(key, result);
     }
   }
 

@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { FiscalResult } from '../../../core/operations/types';
 
 export interface MoySkladAppInstallation {
   appId: string;
@@ -18,6 +19,74 @@ export interface MoySkladInstallationStore {
   get(accountId: string): MoySkladAppInstallation | undefined;
   set(installation: MoySkladAppInstallation): void;
   delete(accountId: string): void;
+}
+
+export interface MoySkladFiscalResultStore {
+  get(key: string): FiscalResult | undefined;
+  set(key: string, result: FiscalResult): void;
+}
+
+export class InMemoryMoySkladFiscalResultStore implements MoySkladFiscalResultStore {
+  private records = new Map<string, FiscalResult>();
+
+  get(key: string): FiscalResult | undefined {
+    return this.records.get(key);
+  }
+
+  set(key: string, result: FiscalResult): void {
+    this.records.set(key, result);
+  }
+}
+
+export class EncryptedFileMoySkladFiscalResultStore implements MoySkladFiscalResultStore {
+  private readonly key: Buffer;
+  private records = new Map<string, FiscalResult>();
+
+  constructor(private readonly filePath: string, encryptionKey: string) {
+    this.key = crypto.createHash('sha256').update(encryptionKey).digest();
+    this.load();
+  }
+
+  get(key: string): FiscalResult | undefined {
+    return this.records.get(key);
+  }
+
+  set(key: string, result: FiscalResult): void {
+    this.records.set(key, result);
+    this.persist();
+  }
+
+  private load(): void {
+    if (!fs.existsSync(this.filePath)) return;
+    const envelope = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as {
+      iv: string;
+      authTag: string;
+      data: string;
+    };
+    const decipher = crypto.createDecipheriv('aes-256-gcm', this.key, Buffer.from(envelope.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(envelope.authTag, 'base64'));
+    const data = Buffer.concat([
+      decipher.update(Buffer.from(envelope.data, 'base64')),
+      decipher.final()
+    ]);
+    const records = JSON.parse(data.toString('utf8')) as Record<string, FiscalResult>;
+    this.records = new Map(Object.entries(records));
+  }
+
+  private persist(): void {
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.key, iv);
+    const encrypted = Buffer.concat([
+      cipher.update(JSON.stringify(Object.fromEntries(this.records)), 'utf8'),
+      cipher.final()
+    ]);
+    fs.writeFileSync(this.filePath, JSON.stringify({
+      iv: iv.toString('base64'),
+      authTag: cipher.getAuthTag().toString('base64'),
+      data: encrypted.toString('base64')
+    }), { mode: 0o600 });
+  }
 }
 
 export class InMemoryMoySkladInstallationStore implements MoySkladInstallationStore {

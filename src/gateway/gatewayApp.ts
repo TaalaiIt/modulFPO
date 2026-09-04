@@ -4,7 +4,10 @@ import { MoySkladProviderAdapter } from '../providers/moysklad/moySkladProviderA
 import { MockProviderAdapter } from '../providers/mock/mockProviderAdapter';
 import { LicenseServer } from '../licensing/server/licenseServer';
 import { GatewayWsServer, WsAgentTransport } from './transport/gatewayWsServer';
-import { EncryptedFileMoySkladInstallationStore } from '../providers/moysklad/security/moySkladSecurity';
+import {
+  EncryptedFileMoySkladFiscalResultStore,
+  EncryptedFileMoySkladInstallationStore
+} from '../providers/moysklad/security/moySkladSecurity';
 import { FiscalResult } from '../core/operations/types';
 
 export interface GatewayAppOptions {
@@ -50,7 +53,13 @@ export function buildGatewayApp(options?: GatewayAppOptions): {
         process.env.MOYSKLAD_STORAGE_KEY
       )
     : undefined;
-  const msAdapter = new MoySkladProviderAdapter(orchestrator.auditLogger, installationStore);
+  const fiscalResultStore = process.env.MOYSKLAD_STORAGE_PATH && process.env.MOYSKLAD_STORAGE_KEY
+    ? new EncryptedFileMoySkladFiscalResultStore(
+        `${process.env.MOYSKLAD_STORAGE_PATH}.fiscal-results`,
+        process.env.MOYSKLAD_STORAGE_KEY
+      )
+    : undefined;
+  const msAdapter = new MoySkladProviderAdapter(orchestrator.auditLogger, installationStore, fiscalResultStore);
   const mockAdapter = new MockProviderAdapter();
 
   if (!orchestrator.providerRegistry.get('MOYSKLAD')) {

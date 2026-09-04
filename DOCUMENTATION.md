@@ -218,6 +218,17 @@ export interface NormalizedFiscalOperation {
 - `POST /driver/close-shift` — закрытие смены (формирование Z-отчета).
 - `GET /driver/x-report` — локальный X-отчет.
 
+### 5.4. Постоянное хранение результатов фискализации
+
+Для возвратов после перезапуска Gateway необходимо задать в `.env.gateway`:
+
+```env
+MOYSKLAD_STORAGE_PATH=/app/data/moysklad-installations.enc
+MOYSKLAD_STORAGE_KEY=<длинный случайный секрет>
+```
+
+Результаты продаж сохраняются в отдельный файл `/app/data/moysklad-installations.enc.fiscal-results` и шифруются тем же ключом. В Docker каталог `/app/data` сохраняется в volume `smartdev-data`.
+
 ### 5.2. Движок автоматического восстановления (`FpoRecoveryEngine`):
 
 ```mermaid

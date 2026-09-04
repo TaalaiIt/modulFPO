@@ -9,5 +9,5 @@ export const MOYSKLAD_FISCAL_DESCRIPTOR = {
     'retailDrawerCashOut'
   ],
   paymentTypes: ['cash', 'card', 'cashCard', 'qr'],
-  endpointBase: '/fiscal/1.0'
+  endpointBase: '/fiscal'
 } as const;

@@ -334,7 +334,10 @@ export class AgentService {
       let st = 0;
       if (it.tax?.salesTaxRate) {
         const m = it.tax.salesTaxRate.match(/\d+/);
-        if (m) st = parseInt(m[0], 10);
+        if (m) {
+          const salesTaxValue = parseInt(m[0], 10);
+          st = salesTaxValue === 5 ? 4 : salesTaxValue;
+        }
       }
 
       return {
